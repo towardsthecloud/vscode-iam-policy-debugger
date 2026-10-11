@@ -21,6 +21,7 @@ const {execFileSync} = require('node:child_process');
   }
   await fs.cp('tests/fixtures', workspace, {recursive: true});
   execFileSync('unzip', ['-q', path.resolve('.vscode-test/iam-policy-debugger.vsix'), '-d', packaged]);
+  execFileSync(process.execPath, ['--test', 'tests/cli.test.cjs'], {stdio: 'inherit', env: {...process.env, IAM_CLI_PATH: path.join(packaged, 'extension', 'out', 'cli.cjs')}});
   await runTests({
     version,
     extensionDevelopmentPath: path.join(packaged, 'extension'),

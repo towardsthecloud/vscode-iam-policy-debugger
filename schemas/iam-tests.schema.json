@@ -81,6 +81,18 @@
                 }
               }
             }
+          },
+          "policyId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "JSON pointer in CloudFormation or Terraform policy address; required when the file contains multiple policies."
+          },
+          "templateValues": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Explicit CloudFormation or Terraform reference values."
           }
         }
       }

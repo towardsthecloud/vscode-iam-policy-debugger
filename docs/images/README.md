@@ -19,7 +19,9 @@ playwright-cli -s=iam console error
 curl http://127.0.0.1:9242
 ```
 
-The showcase uses macOS keyboard shortcuts. It checks visible Problems findings and their removal after editor edits, captures the debugger beside the policy, saves a denied request and runs both scenarios from the Testing panel. It writes three PNGs and `policy-demo.webm` to `.vscode-test/results/`. The debugger script captures its narrow layout and retains a Playwright trace. The host waits up to 10 minutes for the completion request.
+The showcase uses macOS keyboard shortcuts. It checks visible Problems findings, captures the debugger beside the policy, saves a denied request, runs saved scenarios from the Testing panel, and captures a CloudFormation policy with explicit template bindings. It writes four PNGs and `policy-demo.webm` to `.vscode-test/results/`. The debugger script captures its narrow layout and retains a Playwright trace. The host waits up to 10 minutes for the completion request.
+
+The committed GIF also shows a manual editor repair from the earlier standalone-policy preview. The current capture script records simulation and scenario saving; packaged integration checks cover findings clearing after unsaved editor repairs. Electron’s CDP connection did not deliver code-editor text changes in the final capture session, so that keyboard-only demonstration is not repeated by the script.
 
 Review the images for clipping, readability and unintended data before replacing the README assets. Convert the WebM with an available FFmpeg binary:
 
@@ -30,6 +32,7 @@ ffmpeg -y -i .vscode-test/results/policy-demo.webm \
 cp .vscode-test/results/policy-validation.png docs/images/policy-validation.png
 cp .vscode-test/results/policy-debugger.png docs/images/policy-debugger.png
 cp .vscode-test/results/policy-scenarios.png docs/images/policy-scenarios.png
+cp .vscode-test/results/policy-template.png docs/images/policy-template.png
 ```
 
 The temporary profile settings only affect the sandbox host. Marketplace publishing and release automation remain separate work.

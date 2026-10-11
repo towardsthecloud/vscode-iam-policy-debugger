@@ -43,7 +43,9 @@
     "test": "npm run test:integration",
     "test:integration": "npm run package && node scripts/test-vscode.cjs",
     "package": "vsce package --no-dependencies --out .vscode-test/iam-policy-debugger.vsix",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile",
+    "test:cli": "node --test tests/cli.test.cjs",
+    "test:scenarios": "node out/cli.cjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -72,14 +74,14 @@
       "editor/title": [
         {
           "command": "iamPolicyDebugger.debugPolicy",
-          "when": "resourceExtname == .json && resourceFilename !~ /\\.iam-tests\\.json$/",
+          "when": "resourceExtname =~ /\\.(json|ya?ml|tf)$/ && resourceFilename !~ /\\.iam-tests\\.json$/",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
           "command": "iamPolicyDebugger.debugPolicy",
-          "when": "resourceExtname == .json && resourceFilename !~ /\\.iam-tests\\.json$/",
+          "when": "resourceExtname =~ /\\.(json|ya?ml|tf)$/ && resourceFilename !~ /\\.iam-tests\\.json$/",
           "group": "iam"
         }
       ]
@@ -103,6 +105,13 @@
   },
   "dependencies": {
     "@actsecurity/iam-data": "0.21.202610101",
-    "jsonc-parser": "3.3.1"
+    "@cdktf/hcl2json": "0.21.0",
+    "ipaddr.js": "2.5.0",
+    "jsonc-parser": "3.3.1",
+    "yaml": "2.9.1"
+  },
+  "icon": "images/iam-policy-debugger-extension-icon.png",
+  "bin": {
+    "iam-policy-tests": "out/cli.cjs"
   }
 }

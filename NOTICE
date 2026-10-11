@@ -12,3 +12,12 @@ The policy evaluator in this repository is independently implemented.
 
 Includes Microsoft jsonc-parser, MIT-licensed.
 See licenses/jsonc-parser.txt for its copyright and license.
+
+Includes ipaddr.js (MIT) and yaml (ISC).
+See licenses/ipaddr.js.txt and licenses/yaml.txt.
+
+Includes the unmodified @cdktf/hcl2json parser, MPL-2.0.
+See licenses/hcl2json.txt and out/node_modules/@cdktf/hcl2json/LICENSE.
+Source for version 0.21.0, including the Go/WASM parser:
+https://github.com/hashicorp/terraform-cdk/tree/v0.21.0/packages/@cdktf/hcl2json
+Its separately packaged runtime dependencies retain their original licenses.

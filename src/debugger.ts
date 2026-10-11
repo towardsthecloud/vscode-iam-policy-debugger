@@ -3,24 +3,30 @@ import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { simulationScope, parseJson, validateRequest, type AccessRequest, type AccessResult } from './simulation';
 import type { ScenarioTests } from './testing';
+import {policiesIn, validatePolicyOptions, type PolicyOptions} from './policies';
 
 export async function openDebugger(context: vscode.ExtensionContext, tests: ScenarioTests, suppliedUri?: vscode.Uri): Promise<void> {
   if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before debugging policies.');
   const uri = suppliedUri ?? vscode.window.activeTextEditor?.document.uri;
-  if (!uri || uri.scheme !== 'file' || !uri.path.toLowerCase().endsWith('.json') || uri.path.endsWith('.iam-tests.json')) {
-    throw new Error('Open a standalone IAM identity-policy JSON file, then run IAM: Debug Access for Current Policy.');
+  if (!uri || uri.scheme !== 'file' || !/\.(json|ya?ml|tf)$/i.test(uri.path) || uri.path.endsWith('.iam-tests.json')) {
+    throw new Error('Open an IAM policy JSON, CloudFormation JSON/YAML or Terraform file, then run IAM: Debug Access for Current Policy.');
   }
   const document = await vscode.workspace.openTextDocument(uri);
+  const sources = await policiesIn(document.getText(), uri.fsPath);
+  if (!sources.length) throw new Error('No IAM policy documents found in this file.');
+  const source = sources.length === 1 ? sources[0] : (await vscode.window.showQuickPick(sources.map(source => ({label: source.id, source})), {placeHolder: 'Choose an IAM policy to debug'}))?.source;
+  if (!source) return;
+  const isTemplate = source.id !== '';
   const panel = vscode.window.createWebviewPanel('iamPolicyDebugger', 'IAM Policy Debugger', vscode.ViewColumn.Beside,
     {enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')]});
   let sequence = 0;
-  let last: { id: number; request: AccessRequest; result: AccessResult; version: number } | undefined;
+  let last: { id: number; request: AccessRequest; options: PolicyOptions; result: AccessResult; version: number } | undefined;
   const post = (message: unknown): void => { void panel.webview.postMessage(message); };
   const listener = panel.webview.onDidReceiveMessage(async (message: unknown) => {
     if (!message || typeof message !== 'object') return;
     const input = message as Record<string, unknown>;
     try {
-      if (input.type === 'ready') { post({type: 'init', policyName: path.basename(uri.fsPath), scope: simulationScope}); return; }
+      if (input.type === 'ready') { post({type: 'init', policyName: path.basename(uri.fsPath) + (isTemplate ? ` · ${source.id}` : ''), isTemplate, scope: simulationScope}); return; }
       if (input.type === 'changed') { sequence++; last = undefined; return; }
       if (input.type === 'simulate') {
         if (typeof input.id !== 'number' || !Number.isSafeInteger(input.id)) return;
@@ -32,9 +38,10 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
           const request = validateRequest(typeof input.contextJson === 'string'
             ? {...input.request as Record<string, unknown>, context: parseJson(input.contextJson).value}
             : input.request);
-          const result = await vscode.commands.executeCommand<AccessResult>('iamPolicyDebugger.simulate', uri, request);
+          const options = validatePolicyOptions(isTemplate ? {policyId: source.id, templateValues: parseJson(String(input.templateJson ?? '{}')).value} : {});
+          const result = await vscode.commands.executeCommand<AccessResult>('iamPolicyDebugger.simulate', uri, request, options);
           if (sequence !== revision || document.version !== version) return;
-          last = {id, request, result, version};
+          last = {id, request, options, result, version};
           post({type: 'result', id, result});
         } catch (error) {
           if (sequence === revision) post({type: 'error', id, message: error instanceof Error ? error.message : String(error)});
@@ -50,7 +57,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
         editor.selection = new vscode.Selection(range.start, range.end);
         editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       } else if (input.type === 'save') {
-        const saved = await vscode.commands.executeCommand<vscode.Uri>('iamPolicyDebugger.saveScenario', uri, {name: input.name, expected: input.expected, request: last.request});
+        const saved = await vscode.commands.executeCommand<vscode.Uri>('iamPolicyDebugger.saveScenario', uri, {name: input.name, expected: input.expected, request: last.request, ...last.options});
         await tests.refresh();
         post({type: 'saved', name: path.basename(saved.fsPath)});
       }
@@ -81,6 +88,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
       <label for="account">Resource account ID<input id="account" required pattern="(?:[0-9]{12}|aws)" placeholder="123456789012" autocomplete="off"><span class="hint">The 12-digit owner account, or aws for an AWS-owned ARN.</span></label>
       <label class="wide" for="resource">Resource ARN<input id="resource" required placeholder="arn:aws:s3:::example-uploads/photo.jpg" autocomplete="off" spellcheck="false"><span class="hint">Use a concrete ARN. Use * only for actions without resource-level permissions.</span></label>
       <label class="wide" for="context">Request context (JSON)<textarea id="context" rows="4" spellcheck="false">{}</textarea><span class="hint">Values are strings or arrays of strings, for example {"aws:SecureTransport": "true"}.</span></label>
+      <label class="wide" id="template-field" for="template" hidden>Template values (JSON)<textarea id="template" rows="3" spellcheck="false">{}</textarea><span class="hint">Supply references explicitly, for example {"Bucket":"example-uploads"} or {"var.bucket":"example-uploads"}. These values are separate from IAM request context.</span></label>
     </div>
     <button id="simulate" type="submit">Simulate access</button>
   </form>

@@ -11,15 +11,16 @@ async page => {
   await clearNotifications();
   let frame;
   for (const candidate of page.frames().slice(1)) {
+    if (!await candidate.locator('iframe').count()) continue;
     if (await candidate.locator('iframe').evaluate(el => el.contentDocument?.querySelector('#policy-name')?.textContent === 'conditional.json')) frame = candidate;
   }
   if (!frame) throw new Error('Conditional policy webview is missing.');
-  const iframe = frame.locator('iframe');
+  let iframe = frame.locator('iframe');
   // Electron omits VS Code's rewritten inner webview frame from its CDP frame tree.
   // Element handles still exercise the real DOM and the extension's message bridge.
   const element = async selector => (await iframe.evaluateHandle((el, selector) => el.contentDocument.querySelector(selector), selector)).asElement();
   const fill = async (selector, value) => { const el = await element(selector); await el.fill(value); await el.dispose(); };
-  const click = async selector => {const el = await element(selector); await el.click(); await el.dispose();};
+  const click = async selector => {const el = await element(selector); await el.evaluate(node => node.click()); await el.dispose();};
   const text = selector => iframe.evaluate((el, selector) => el.contentDocument.querySelector(selector).textContent, selector);
   const waitText = async (selector, expected) => {
     await frame.waitForFunction(({selector, expected}) => document.querySelector('iframe').contentDocument.querySelector(selector).textContent.includes(expected), {selector, expected}, {timeout: 15000});
@@ -80,6 +81,44 @@ async page => {
     await click('#simulate');
     await waitText('#notice', 'Duplicate JSON property');
     checks.push('duplicate context JSON properties produce an error instead of silently replacing a value');
+    await page.keyboard.press('Meta+p');
+    const picker = page.getByPlaceholder('Search files by name (append : to go to line or @ to go to symbol)');
+    await picker.fill('template.yaml');
+    await page.getByRole('option').filter({hasText: 'template.yaml'}).first().click();
+    await picker.waitFor({state: 'hidden'});
+    await page.keyboard.press('Meta+Shift+p');
+    await page.getByPlaceholder('Type the name of a command to run.').fill('>IAM: Debug Access for Current Policy');
+    await page.getByRole('option').filter({hasText: 'IAM: Debug Access for Current Policy'}).first().click();
+    await page.getByPlaceholder('Type the name of a command to run.').waitFor({state: 'hidden'});
+    frame = undefined;
+    for (const candidate of page.frames().slice(1)) {
+      if (!await candidate.locator('iframe').count()) continue;
+      if (await candidate.locator('iframe').evaluate(el => el.contentDocument?.querySelector('#policy-name')?.textContent.startsWith('template.yaml'))) frame = candidate;
+    }
+    if (!frame) throw new Error('CloudFormation webview is missing.');
+    iframe = frame.locator('iframe');
+    await fill('#principal', 'arn:aws:iam::123456789012:role/Application');
+    await fill('#action', 's3:GetObject');
+    await fill('#account', '123456789012');
+    await fill('#resource', 'arn:aws:s3:::example-uploads/photo.jpg');
+    await fill('#context', '{}');
+    await click('#simulate');
+    await waitText('#notice', 'Bucket');
+    await fill('#template', '{"Bucket":"example-uploads"}');
+    await click('#simulate');
+    await waitText('#decision', 'Allowed by this policy');
+    await fill('#test-name', 'CloudFormation read from UI');
+    const templateExpected = await element('#expected'); await templateExpected.selectOption('Allowed'); await templateExpected.dispose();
+    await click('#save');
+    await waitText('#notice', 'Saved to template.iam-tests.json');
+    await click('#statements article button');
+    await page.setViewportSize({width: 1440, height: 900});
+    const templateGeometry = await iframe.evaluate(el => ({width: el.contentDocument.documentElement.clientWidth, scrollWidth: el.contentDocument.documentElement.scrollWidth}));
+    if (templateGeometry.scrollWidth > templateGeometry.width + 1) throw new Error('Template policy address overflows a narrow panel');
+    checks.push('template values cross the real webview bridge, unresolved references show errors, embedded scenarios save and policy addresses fit narrow panels');
+    await page.setViewportSize({width: 1600, height: 1100});
+    const templateResult = await element('#result'); await templateResult.scrollIntoViewIfNeeded(); await templateResult.dispose();
+    await page.screenshot({path: '.vscode-test/results/policy-template.png'});
     return {checks};
   } finally {
     await page.context().tracing.stop({path: '.vscode-test/results/ui-trace.zip'});

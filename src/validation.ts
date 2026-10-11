@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { parseTree, findNodeAtLocation, getNodeValue, printParseErrorCode, type Node, type ParseError } from 'jsonc-parser';
 import { iamActionDetails } from '@actsecurity/iam-data';
+import {policiesIn, type LoadedPolicy} from './policies';
+import {completeIdentityResourceArn} from './simulation';
 
 export class PolicyValidation implements vscode.Disposable {
   private readonly collection = vscode.languages.createDiagnosticCollection('iamPolicy');
@@ -17,6 +19,8 @@ export class PolicyValidation implements vscode.Disposable {
   }
 
   private validate(document: vscode.TextDocument): void {
+    const template = /\.(ya?ml|tf)$/i.test(document.uri.path) || (document.languageId === 'json' && /"Resources"\s*:/.test(document.getText()));
+    if (template) { void this.validateTemplate(document); return; }
     if (document.languageId !== 'json' || document.uri.path.endsWith('.iam-tests.json')) return;
     const errors: ParseError[] = [];
     const tree = parseTree(document.getText(), errors, {disallowComments: true, allowTrailingComma: false});
@@ -37,7 +41,41 @@ export class PolicyValidation implements vscode.Disposable {
     }).catch(error => console.error('IAM policy validation failed', error));
   }
 
+  private async validateTemplate(document: vscode.TextDocument): Promise<void> {
+    const revision = document.version, id = document.uri.toString();
+    let findings: vscode.Diagnostic[] = [];
+    try {
+      const sources = await policiesIn(document.getText(), document.uri.fsPath);
+      if (sources.length) this.recognized.add(id); else this.recognized.delete(id);
+      for (const source of sources) {
+        const policy = await source.load({}, true);
+        const tree = parseTree(policy.text)!;
+        mapRanges(tree, [], policy);
+        findings.push(...await policyFindings(document, tree));
+        if (policy.unresolved.length) findings.push(diagnostic(document, {offset: source.start, length: source.end - source.start} as Node,
+          'UNRESOLVED_TEMPLATE_VALUES', `Supply template values in the debugger to evaluate: ${[...new Set(policy.unresolved)].join(', ')}.`, vscode.DiagnosticSeverity.Information));
+      }
+    } catch (error) {
+      if (this.recognized.has(id) || /\bStatement\b|\baws_iam_/.test(document.getText())) findings = [diagnostic(document, {offset: 0, length: 1} as Node,
+        'TEMPLATE_POLICY_ERROR', error instanceof Error ? error.message : String(error), vscode.DiagnosticSeverity.Error)];
+    }
+    if (!document.isClosed && document.version === revision) this.collection.set(document.uri, findings);
+  }
+
   dispose(): void { for (const disposable of this.disposables) disposable.dispose(); }
+}
+
+function mapRanges(node: Node, path: (string | number)[], policy: LoadedPolicy): void {
+  const range = policy.rangeAt(path);
+  Object.assign(node, {offset: range.start, length: range.end - range.start});
+  if (node.type === 'object') for (const property of node.children ?? []) {
+    const key = property.children![0], value = property.children![1], next = [...path, key.value];
+    const range = policy.rangeAt(next);
+    Object.assign(property, {offset: range.start, length: range.end - range.start});
+    Object.assign(key, {offset: range.start, length: range.end - range.start});
+    mapRanges(value, next, policy);
+  }
+  else if (node.type === 'array') node.children?.forEach((child, index) => mapRanges(child, [...path, index], policy));
 }
 
 async function policyFindings(document: vscode.TextDocument, tree: Node): Promise<vscode.Diagnostic[]> {
@@ -98,6 +136,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     const action = pair('Action', 'NotAction');
     const actions = strings(action, 'Action');
     for (const value of actions) {
+      if (value.value.includes('${template:')) continue;
       if (value.value !== '*' && !/^[a-z0-9-]+:[a-z0-9*?]+$/i.test(value.value)) report(value, 'INVALID_ACTION', 'Use an IAM service:Action name or action wildcard.');
       else if (!/[?*]/.test(value.value)) {
         const [service, name] = value.value.split(':');
@@ -106,10 +145,11 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
       }
     }
     const principal = pair('Principal', 'NotPrincipal', false);
-    const trust = principal && actions.length > 0 && actions.every(node => /^sts:AssumeRole(?:WithSAML|WithWebIdentity)?$/i.test(node.value));
+    if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny') report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
+    const trust = principal && actions.length > 0 && actions.every(node => /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity)$/i.test(node.value));
     const resource = pair('Resource', 'NotResource', !trust);
     const resources = strings(resource, 'Resource');
-    for (const value of resources) if (value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(value.value)) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
+    for (const value of resources) if (!value.value.includes('${template:') && value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
     if (principal && principal.value !== '*') {
       if (principal.type !== 'object') report(principal, 'INVALID_PRINCIPAL_TYPE', 'Principal must be "*" or an object with AWS, Service, Federated or CanonicalUser keys.');
       else {
@@ -135,7 +175,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
             const values = value.type === 'array' ? value.children ?? [] : [value];
             if (values.some(node => !['string', 'number', 'boolean'].includes(node.type))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers or booleans, or arrays of these values.');
             if (match?.[2] === 'Bool' && values.length !== 1) report(value, 'INVALID_CONDITION_MULTIPLE_BOOLEAN', 'Bool requires a single Boolean value.');
-            if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');
+            if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !String(node.value).includes('${template:') && !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');
           }
         }
       }
@@ -145,7 +185,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
       else for (const value of actions.filter(node => node.value === '*' || node.value.endsWith(':*'))) report(value, 'BROAD_ACTION', 'Allow statement grants broad actions. Specify the smallest action list the workload needs.', true);
       if (field(statement, 'NotResource')) report(resource!, 'ALLOW_WITH_NOT_RESOURCE', 'Allow statement uses NotResource. It can grant access to every resource except those listed. Prefer explicit Resource ARNs.', true);
       const publicPrincipal = principal && (principal.value === '*' || (principal.type === 'object' && (principal.children ?? []).some(property => [getNodeValue(property.children![1])].flat().includes('*'))));
-      if (publicPrincipal) {
+      if (publicPrincipal && !field(statement, 'NotPrincipal')) {
         report(principal!, 'PUBLIC_PRINCIPAL', 'Allow statement has a public principal. Replace the wildcard principal or require conditions that restrict access.', true);
         if (!condition || condition.type !== 'object' || !condition.children?.length) report(principal!, 'PUBLIC_PRINCIPAL_WITHOUT_CONDITION', 'Public principal has no limiting condition. Review the intended trust boundary before deploying.', true);
       }

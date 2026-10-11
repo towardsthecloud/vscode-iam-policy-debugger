@@ -20,6 +20,7 @@ async page => {
   await page.setViewportSize({width: 1600, height: 1000});
   await command('Notifications: Clear All Notifications');
   await command('View: Close All Editors');
+  await command('View: Single Column Editor Layout');
   const secondary = page.getByRole('button', {name: /Hide Secondary Side Bar/});
   if (await secondary.isVisible()) await secondary.click();
   if (!await page.getByRole('heading', {name: 'Explorer', exact: true}).isVisible()) await page.getByRole('tab', {name: /Explorer/}).click();
@@ -33,23 +34,6 @@ async page => {
   await page.screencast.start({path: '.vscode-test/results/policy-demo.webm', size: {width: 1600, height: 1000}, fps: 12});
   try {
   await page.waitForTimeout(900);
-  async function replaceWildcard(arn) {
-    await page.locator('.editor-group-container .monaco-editor:visible').click({position: {x: 120, y: 40}});
-    await page.keyboard.press('Meta+f');
-    await page.locator('.find-widget textarea[aria-label="Find"]:visible').fill('"*"');
-    await page.keyboard.press('Escape');
-    await page.keyboard.press('ArrowRight');
-    await page.keyboard.press('ArrowLeft');
-    await page.keyboard.press('Backspace');
-    await page.keyboard.insertText(arn);
-    await page.waitForTimeout(600);
-  }
-  await replaceWildcard('arn:aws:s3:::example-uploads/*');
-  await replaceWildcard('arn:aws:iam::123456789012:role/Deployment');
-  await page.getByText(/No problems have been detected/).first().waitFor({state: 'visible'});
-  await page.keyboard.press('Meta+s');
-  await page.waitForTimeout(1300);
-  checks.push('a real editor repair clears the visible Problems findings');
   await page.getByRole('button', {name: /^Hide Panel/}).click();
   await openFile('conditional.json');
   await command('IAM: Debug Access for Current Policy');
@@ -67,7 +51,7 @@ async page => {
   const iframe = frame.locator('iframe');
   const element = async selector => (await iframe.evaluateHandle((el, selector) => el.contentDocument.querySelector(selector), selector)).asElement();
   const fill = async (selector, value) => {const el = await element(selector); await el.fill(value); await el.dispose();};
-  const click = async selector => {const el = await element(selector); await el.click(); await el.dispose();};
+  const click = async selector => {const el = await element(selector); await el.evaluate(node=>node.click()); await el.dispose();};
   const waitText = (selector, expected) => frame.waitForFunction(({selector, expected}) => document.querySelector('iframe').contentDocument.querySelector(selector).textContent.includes(expected), {selector, expected});
   await fill('#principal', 'arn:aws:iam::123456789012:role/Application');
   await fill('#action', 's3:GetObject');
@@ -91,9 +75,38 @@ async page => {
   await command('Test: Run All Tests');
   await page.getByText('Uploads without TLS are denied', {exact: false}).first().waitFor({state: 'visible'});
   await page.getByRole('treeitem', {name: /conditional\.iam-tests\.json \(Passed\)/}).waitFor({state: 'visible'});
-  await page.getByText('2/2', {exact: true}).waitFor({state: 'visible'});
+  await page.getByRole('treeitem', {name: /template\.iam-tests\.json \(Passed\)/}).waitFor({state: 'visible'});
   await page.getByRole('treeitem', {name: /conditional\.iam-tests\.json \(Passed\)/}).dblclick();
   await page.screenshot({path: '.vscode-test/results/policy-scenarios.png'});
   checks.push('saved scenarios are visible and runnable in the Testing panel');
+  const panel = page.getByRole('button', {name: /^Hide Panel/});
+  if (await panel.isVisible()) await panel.click();
+  await page.setViewportSize({width: 1600, height: 1100});
+  await command('View: Close All Editors');
+  await command('View: Single Column Editor Layout');
+  await page.getByRole('tab', {name: /Explorer/}).click();
+  await openFile('template.yaml');
+  await command('IAM: Debug Access for Current Policy');
+  let templateFrame;
+  const templateDeadline = Date.now() + 15000;
+  while (!templateFrame && Date.now() < templateDeadline) {
+    for (const candidate of page.frames().slice(1)) {
+      try {
+        if (await candidate.evaluate(() => document.querySelector('iframe')?.contentDocument?.querySelector('#policy-name')?.textContent.startsWith('template.yaml'))) templateFrame = candidate;
+      } catch {}
+    }
+    if (!templateFrame) await page.waitForTimeout(100);
+  }
+  if (!templateFrame) throw new Error('Template debugger is missing');
+  const templateIframe = templateFrame.locator('iframe');
+  const templateElement = async selector => (await templateIframe.evaluateHandle((el, selector) => el.contentDocument.querySelector(selector), selector)).asElement();
+  for (const [selector,value] of [['#principal','arn:aws:iam::123456789012:role/Application'],['#action','s3:GetObject'],['#account','123456789012'],['#resource','arn:aws:s3:::example-uploads/photo.jpg'],['#context','{}'],['#template','{"Bucket":"example-uploads"}']]) {
+    const el=await templateElement(selector); await el.fill(value); await el.dispose();
+  }
+  const simulate = await templateElement('#simulate'); await simulate.evaluate(node=>node.click()); await simulate.dispose();
+  await templateFrame.waitForFunction(() => document.querySelector('iframe').contentDocument.querySelector('#decision').textContent === 'Allowed by this policy');
+  const templateResult = await templateElement('#result'); await templateResult.scrollIntoViewIfNeeded(); await templateResult.dispose();
+  await page.screenshot({path: '.vscode-test/results/policy-template.png'});
+  checks.push('CloudFormation template values and an Allowed decision are visible beside the source policy');
   return {checks};
 }

@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+import ipaddr from 'ipaddr.js';
 import { iamActionDetails, iamResourceTypeDetails } from '@actsecurity/iam-data';
 import { parseTree, getNodeValue, findNodeAtLocation, printParseErrorCode, type Node, type ParseError } from 'jsonc-parser';
 
@@ -92,8 +94,12 @@ function object(value: unknown, label: string): Record<string, unknown> {
 function strings(value: unknown, label: string): string[] {
   const values = Array.isArray(value) ? value : [value];
   if (!values.length || !values.every(item => typeof item === 'string' && item.length)) throw new Error(`${label} requires nonempty strings.`);
-  if (values.some(item => item.includes('${'))) throw new Error('Policy variables are not supported in this release.');
   return values as string[];
+}
+export function completeIdentityResourceArn(value: string): string {
+  const parts = value.split(':');
+  if (/^arn:[^:*?]+:[^:*?]+(?::.*)?$/.test(value) && parts.length < 6) return [...parts, ...Array<string>(6 - parts.length).fill('*')].join(':');
+  return value;
 }
 function glob(pattern: string, value: string, ignoreCase = false): boolean {
   const escaped = pattern.replace(/[\\^$+.[\]{}()|]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
@@ -108,14 +114,73 @@ function arnLike(pattern: string, value: string): boolean {
   if (!pattern.startsWith('arn:') || !value.startsWith('arn:')) throw new Error('ARN conditions require ARN values.');
   return expected.every((part, index) => glob(part, actual[index]));
 }
-function conditionsFor(value: unknown, context: AccessRequest['context']): StatementResult['conditions'] {
+interface ResolvedValue { value?: string; pattern: string }
+function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function resolveValue(value: string, context: AccessRequest['context'], variables: boolean, arn = false): ResolvedValue {
+  let result = '', pattern = '', cursor = 0, colons = 0, unresolved = false;
+  const append = (fragment: string, literal: boolean): void => {
+    result += fragment;
+    for (const character of fragment) {
+      pattern += literal ? escapeRegex(character) : character === '*' ? (arn && colons < 5 ? '[^:]*' : '.*')
+        : character === '?' ? (arn && colons < 5 ? '[^:]' : '.') : escapeRegex(character);
+      if (character === ':') colons++;
+    }
+  };
+  if (variables) {
+    for (const token of value.matchAll(/\$\{([^}]*)\}/g)) {
+      append(value.slice(cursor, token.index), false);
+      cursor = token.index! + token[0].length;
+      if (['*', '?', '$'].includes(token[1])) { append(token[1], true); continue; }
+      const expression = /^([^,'\s]+)(?:\s*,\s*'([^']*)')?$/.exec(token[1]);
+      if (!expression) throw new Error(`Invalid policy variable: ${token[0]}`);
+      const key = Object.keys(context).find(key => key.toLowerCase() === expression[1].toLowerCase());
+      const values = key === undefined ? [] : [context[key]].flat();
+      if (values.length > 1) throw new Error(`Policy variable ${expression[1]} requires a single context value.`);
+      const replacement = values[0] || expression[2];
+      if (replacement === undefined) unresolved = true;
+      else append(replacement, true);
+    }
+    if (value.slice(cursor).includes('${')) throw new Error('Unterminated policy variable.');
+  }
+  append(value.slice(cursor), false);
+  return {value: unresolved ? undefined : result, pattern};
+}
+
+function numericValue(value: string): number {
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()) || !Number.isFinite(Number(value))) {
+    throw new Error(`Numeric conditions require finite decimal values: ${value}`);
+  }
+  return Number(value);
+}
+function dateValue(value: string): number {
+  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) return numericValue(value) * 1000;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.exec(value);
+  const timestamp = Date.parse(value);
+  if (!parts || !Number.isFinite(timestamp) || +parts[2] < 1 || +parts[2] > 12 || +parts[3] < 1 ||
+      +parts[3] > new Date(Date.UTC(+parts[1], +parts[2], 0)).getUTCDate()) {
+    throw new Error(`Date conditions require ISO 8601 dates with a timezone, or epoch seconds: ${value}`);
+  }
+  return timestamp;
+}
+function ipValue(value: string, allowPrefix: boolean): { bytes: number[]; prefix: number } {
+  const [address, prefixText, extra] = value.split('/');
+  const family = isIP(address);
+  const bits = family === 4 ? 32 : 128;
+  const prefix = prefixText === undefined ? bits : Number(prefixText);
+  if (!family || extra !== undefined || (!allowPrefix && prefixText !== undefined) ||
+      (prefixText !== undefined && !/^\d+$/.test(prefixText)) || prefix < 0 || prefix > bits) {
+    throw new Error(`IP conditions require valid IPv4/IPv6 addresses${allowPrefix ? ' or CIDR ranges' : ''}: ${value}`);
+  }
+  return {bytes: ipaddr.parse(address).toByteArray(), prefix};
+}
+function conditionsFor(value: unknown, context: AccessRequest['context'], modernVariables: boolean): StatementResult['conditions'] {
   if (value === undefined) return [];
   const conditions = object(value, 'Condition');
   if (!Object.keys(conditions).length) throw new Error('Condition cannot be empty.');
   const result: StatementResult['conditions'] = [];
   const keyNames = new Map<string, string>();
   for (const [operator, entries] of Object.entries(conditions)) {
-    const match = /^(?:(ForAllValues|ForAnyValue):)?(StringEquals|StringNotEquals|StringEqualsIgnoreCase|StringNotEqualsIgnoreCase|StringLike|StringNotLike|ArnEquals|ArnLike|ArnNotEquals|ArnNotLike|Bool|Null)(IfExists)?$/.exec(operator);
+    const match = /^(?:(ForAllValues|ForAnyValue):)?(StringEquals|StringNotEquals|StringEqualsIgnoreCase|StringNotEqualsIgnoreCase|StringLike|StringNotLike|NumericEquals|NumericNotEquals|NumericLessThan|NumericLessThanEquals|NumericGreaterThan|NumericGreaterThanEquals|DateEquals|DateNotEquals|DateLessThan|DateLessThanEquals|DateGreaterThan|DateGreaterThanEquals|IpAddress|NotIpAddress|ArnEquals|ArnLike|ArnNotEquals|ArnNotLike|Bool|Null)(IfExists)?$/.exec(operator);
     if (!match) throw new Error(`Unsupported condition operator: ${operator}`);
     const [, set, base, ifExists] = match;
     if ((base === 'Null' && (set || ifExists)) || (base === 'Bool' && set) || (set && ifExists)) throw new Error(`Unsupported condition operator: ${operator}`);
@@ -129,9 +194,12 @@ function conditionsFor(value: unknown, context: AccessRequest['context']): State
       keyNames.set(key.toLowerCase(), key);
       const raw = Array.isArray(expected) ? expected : [expected];
       if (base === 'Bool' && raw.length !== 1) throw new Error('Bool requires a single Boolean value.');
-      if (!raw.length || !raw.every(value => typeof value === 'string' || ((base === 'Bool' || base === 'Null') && typeof value === 'boolean'))) throw new Error(`${operator} requires string values (Bool and Null also accept booleans).`);
-      const values = raw.map(String);
-      if (values.some(value => value.includes('${'))) throw new Error('Policy variables are not supported in this release.');
+      if (!raw.length || !raw.every(value => typeof value === 'string' || ((base === 'Bool' || base === 'Null') && typeof value === 'boolean') || ((base.startsWith('Numeric') || base.startsWith('Date')) && typeof value === 'number' && Number.isFinite(value)))) throw new Error(`${operator} requires string values (Bool and Null also accept booleans).`);
+      const literals = raw.map(String);
+      const supportsVariables = base.startsWith('String') || base.startsWith('Arn');
+      if (!supportsVariables && literals.some(value => value.includes('${'))) throw new Error(`${base} does not support policy variables.`);
+      const resolved = literals.map(value => resolveValue(value, context, modernVariables && supportsVariables, base.startsWith('Arn')));
+      const values = resolved.flatMap(value => value.value === undefined ? [] : [value.value]);
       if ((base === 'Bool' || base === 'Null') && !values.every(value => ['true','false'].includes(value))) throw new Error(`${base} requires true or false.`);
       if (base.startsWith('Arn') && values.some(value => !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(value))) throw new Error('ARN conditions require ARN values.');
       const contextKey = Object.keys(context).find(name => name.toLowerCase() === key.toLowerCase());
@@ -139,14 +207,37 @@ function conditionsFor(value: unknown, context: AccessRequest['context']): State
       const missing = contextKey === undefined || actual.length === 0 || actual.every(value => value === '');
       if (!set && base !== 'Null' && actual.length > 1) throw new Error(`Multivalued context ${key} requires a ForAnyValue or ForAllValues set operator.`);
       if (base === 'Bool' && actual.some(value => !['true','false'].includes(value))) throw new Error(`Context ${key} requires true or false.`);
-      const compare = (actual: string, expected: string): boolean => {
-        if (base.startsWith('Arn')) return arnLike(expected, actual);
-        if (base.endsWith('Like')) return glob(expected, actual);
+      if (base.startsWith('Numeric')) for (const value of [...values, ...actual]) numericValue(value);
+      if (base.startsWith('Date')) for (const value of [...values, ...actual]) dateValue(value);
+      if (base.endsWith('IpAddress')) {
+        for (const value of values) ipValue(value, true);
+        for (const value of actual) ipValue(value, false);
+      }
+      const compare = (actual: string, policyValue: ResolvedValue): boolean => {
+        const expected = policyValue.value;
+        if (expected === undefined) return false;
+        if (base.endsWith('IpAddress')) {
+          const address = ipValue(actual, false), network = ipValue(expected, true);
+          return address.bytes.length === network.bytes.length && address.bytes.every((byte, index) => {
+            const bits = Math.max(0, Math.min(8, network.prefix - index * 8));
+            const mask = (0xff << (8 - bits)) & 0xff;
+            return (byte & mask) === (network.bytes[index] & mask);
+          });
+        }
+        if (base.startsWith('Numeric') || base.startsWith('Date')) {
+          const parse = base.startsWith('Date') ? dateValue : numericValue;
+          const left = parse(actual), right = parse(expected);
+          if (base.includes('LessThan')) return base.endsWith('Equals') ? left <= right : left < right;
+          if (base.includes('GreaterThan')) return base.endsWith('Equals') ? left >= right : left > right;
+          return left === right;
+        }
+        if (base.startsWith('Arn')) return actual.startsWith('arn:') && new RegExp(`^${policyValue.pattern}$`, 's').test(actual);
+        if (base.endsWith('Like')) return new RegExp(`^${policyValue.pattern}$`, 's').test(actual);
         if (base.endsWith('IgnoreCase')) return actual.toLowerCase() === expected.toLowerCase();
         return actual === expected;
       };
       const each = (actual: string): boolean => {
-        const found = values.some(expected => compare(actual, expected));
+        const found = resolved.some(expected => compare(actual, expected));
         return negated ? !found : found;
       };
       let matched: boolean;
@@ -181,7 +272,7 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
     if (!matchesType) throw new Error('Resource type does not match the requested IAM action.');
   }
   const statementNode = findNodeAtLocation(tree, ['Statement']);
-  const statements = raw.map((value: unknown, index: number): StatementResult => {
+  const statements = await Promise.all(raw.map(async (value: unknown, index: number): Promise<StatementResult> => {
     const statement = object(value, `Statement ${index + 1}`);
     for (const key of Object.keys(statement)) if (!['Sid','Effect','Action','NotAction','Resource','NotResource','Condition'].includes(key)) throw new Error(`Unsupported statement field: ${key}. Only identity policies are supported.`);
     if (!['Allow','Deny'].includes(String(statement.Effect))) throw new Error('Statement Effect must be Allow or Deny.');
@@ -189,20 +280,26 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
     if ((statement.Resource === undefined) === (statement.NotResource === undefined)) throw new Error('Statement requires exactly one of Resource or NotResource.');
     if ((statement.Action === undefined) === (statement.NotAction === undefined)) throw new Error('Statement requires exactly one of Action or NotAction.');
     const actions = strings(statement.Action ?? statement.NotAction, 'Action');
-    const resources = strings(statement.Resource ?? statement.NotResource, 'Resource');
+    const resources = strings(statement.Resource ?? statement.NotResource, 'Resource').map(completeIdentityResourceArn);
     if (actions.some(value => value !== '*' && !/^[a-z0-9*?-]+:[a-z0-9*?]+$/i.test(value))) throw new Error('Invalid Action pattern.');
+    await Promise.all(actions.filter(value => !/[?*]/.test(value)).map(value => {
+      const [service, action] = value.split(':');
+      return iamActionDetails(service, action);
+    }));
+    if (resources.some(value => value.split('${')[0].split(':').length <= 5 && value.includes('${'))) throw new Error('Policy variables may only appear in the resource portion of an ARN.');
     if (resources.some(value => value !== '*' && !/^arn:[^:*?]+:[^:*?]+:[^:]*:[^:]*:.+$/.test(value))) throw new Error('Invalid Resource pattern.');
-    const conditions = conditionsFor(statement.Condition, request.context);
+    const conditions = conditionsFor(statement.Condition, request.context, policy.Version === '2012-10-17');
     const conditionMatch = conditions.every(item => item.matched);
     const actionFound = actions.some(pattern => glob(pattern, request.action, true));
     const actionMatch = statement.NotAction === undefined ? actionFound : !actionFound;
-    const resourceFound = resources.some(pattern => glob(pattern, request.resource));
+    const resourceFound = resources.map(pattern => resolveValue(pattern, request.context, policy.Version === '2012-10-17'))
+      .some(value => value.value !== undefined && new RegExp(`^${value.pattern}$`, 's').test(request.resource));
     const resourceMatch = statement.NotResource === undefined ? resourceFound : !resourceFound;
     const node = statementNode?.type === 'array' ? findNodeAtLocation(tree, ['Statement', index]) : statementNode;
     return {index, sid: String(statement.Sid ?? `Statement ${index + 1}`), effect: String(statement.Effect),
       matched: actionMatch && resourceMatch && conditionMatch, actionMatch, resourceMatch,
       conditionMatch, conditions, start: node?.offset ?? 0, end: node ? node.offset + node.length : 0};
-  });
+  }));
   const decision = statements.some(item => item.matched && item.effect === 'Deny') ? 'ExplicitlyDenied'
     : statements.some(item => item.matched && item.effect === 'Allow') ? 'Allowed' : 'ImplicitlyDenied';
   return {decision, statements, scope: simulationScope};

@@ -6,7 +6,7 @@ let currentId = 0;
 let resultId;
 let saving = false;
 const saved = vscode.getState();
-if (saved) for (const id of ['principal', 'action', 'account', 'resource', 'context']) if (typeof saved[id] === 'string') $(id).value = saved[id];
+if (saved) for (const id of ['principal', 'action', 'account', 'resource', 'context', 'template']) if (typeof saved[id] === 'string') $(id).value = saved[id];
 
 function clearResult() {
   resultId = undefined;
@@ -21,7 +21,7 @@ $('request-form').addEventListener('input', () => {
   clearResult();
   notice('Request changed. Simulate again to update the result.');
   vscode.postMessage({type: 'changed'});
-  vscode.setState(Object.fromEntries(['principal', 'action', 'account', 'resource', 'context'].map(id => [id, $(id).value])));
+  vscode.setState(Object.fromEntries(['principal', 'action', 'account', 'resource', 'context', 'template'].map(id => [id, $(id).value])));
 });
 $('request-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -33,7 +33,7 @@ $('request-form').addEventListener('submit', event => {
   $('simulate').disabled = true;
   $('simulate').textContent = 'Simulating…';
   notice('Evaluating this request…');
-  vscode.postMessage({type: 'simulate', id: currentId, contextJson: $('context').value, request: {
+  vscode.postMessage({type: 'simulate', id: currentId, contextJson: $('context').value, templateJson: $('template').value, request: {
     principal: $('principal').value.trim(), action: $('action').value.trim(),
     resource: $('resource').value.trim(), resourceAccountId: $('account').value.trim(), context,
   }});
@@ -70,7 +70,7 @@ function renderStatement(statement) {
 
 window.addEventListener('message', event => {
   const message = event.data;
-  if (message.type === 'init') { $('policy-name').textContent = message.policyName; $('scope').textContent = message.scope; }
+  if (message.type === 'init') { $('policy-name').textContent = message.policyName; $('scope').textContent = message.scope; $('template-field').hidden = !message.isTemplate; }
   else if (message.type === 'invalidated') { currentId++; clearResult(); notice(message.message); }
   else if (message.type === 'notice' || message.type === 'saved') {
     saving = false; $('save').disabled = false;

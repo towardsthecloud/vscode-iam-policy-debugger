@@ -52,6 +52,33 @@ exports.run = async function () {
       assert.equal(result.decision, expected, JSON.stringify({condition, context}));
     }
     for (const [condition, context, expected] of [
+      [{StringEquals: {'aws:RequestTag/team': '${aws:PrincipalTag/team}'}}, {'aws:RequestTag/team': 'platform', 'AWS:PrincipalTag/team': 'platform'}, 'Allowed'],
+      [{StringEquals: {'aws:RequestTag/team': '${aws:PrincipalTag/team}'}}, {'aws:RequestTag/team': 'platform'}, 'ImplicitlyDenied'],
+      [{StringNotEquals: {'aws:RequestTag/team': '${aws:PrincipalTag/team}'}}, {'aws:RequestTag/team': 'platform'}, 'Allowed'],
+      [{StringEquals: {'aws:RequestTag/team': "${aws:PrincipalTag/team, 'platform'}"}}, {'aws:RequestTag/team': 'platform'}, 'Allowed'],
+      [{StringLike: {'aws:RequestTag/team': '${aws:PrincipalTag/team}'}}, {'aws:RequestTag/team': 'platform', 'aws:PrincipalTag/team': '*'}, 'ImplicitlyDenied'],
+      [{StringEquals: {'aws:RequestTag/team': '${*}'}}, {'aws:RequestTag/team': '*'}, 'Allowed'],
+      [{IpAddress: {'aws:SourceIp': ['192.0.2.0/24', '2001:db8::/32']}}, {'aws:SourceIp': '192.0.2.255'}, 'Allowed'],
+      [{IpAddress: {'aws:SourceIp': '192.0.2.0/24'}}, {'aws:SourceIp': '192.0.3.1'}, 'ImplicitlyDenied'],
+      [{IpAddress: {'aws:SourceIp': '2001:db8::/32'}}, {'aws:SourceIp': '2001:db8:1234::1'}, 'Allowed'],
+      [{IpAddress: {'aws:SourceIp': '192.0.2.1'}}, {'aws:SourceIp': '192.0.2.2'}, 'ImplicitlyDenied'],
+      [{NotIpAddress: {'aws:SourceIp': ['192.0.2.0/24', '2001:db8::/32']}}, {'aws:SourceIp': '2001:db8::1'}, 'ImplicitlyDenied'],
+      [{NotIpAddress: {'aws:SourceIp': '192.0.2.0/24'}}, {}, 'Allowed'],
+      [{IpAddressIfExists: {'aws:SourceIp': '192.0.2.0/24'}}, {}, 'Allowed'],
+      [{DateLessThan: {'aws:CurrentTime': '2026-10-12T00:00:00Z'}}, {'aws:CurrentTime': '2026-10-11T23:59:59Z'}, 'Allowed'],
+      [{DateLessThan: {'aws:CurrentTime': '2026-10-12T00:00:00Z'}}, {'aws:CurrentTime': '2026-10-12T00:00:00Z'}, 'ImplicitlyDenied'],
+      [{DateEquals: {'aws:CurrentTime': '2026-01-01T00:00:00Z'}}, {'aws:CurrentTime': '2026-01-01T01:00:00+01:00'}, 'Allowed'],
+      [{DateEquals: {'aws:EpochTime': '0'}}, {'aws:EpochTime': '1970-01-01T00:00:00Z'}, 'Allowed'],
+      [{DateNotEquals: {'aws:CurrentTime': '2026-01-01T00:00:00Z'}}, {}, 'Allowed'],
+      [{DateGreaterThanEqualsIfExists: {'aws:CurrentTime': '2026-01-01T00:00:00Z'}}, {}, 'Allowed'],
+      [{NumericLessThanEquals: {'s3:max-keys': 10}}, {'s3:max-keys': '10'}, 'Allowed'],
+      [{NumericLessThanEquals: {'s3:max-keys': 10}}, {'s3:max-keys': '11'}, 'ImplicitlyDenied'],
+      [{NumericGreaterThan: {'aws:MultiFactorAuthAge': '60'}}, {'aws:MultiFactorAuthAge': '61'}, 'Allowed'],
+      [{NumericGreaterThanEquals: {'aws:MultiFactorAuthAge': '60'}}, {'aws:MultiFactorAuthAge': '60'}, 'Allowed'],
+      [{NumericEquals: {'s3:max-keys': ['5', '10']}}, {'s3:max-keys': '5'}, 'Allowed'],
+      [{NumericNotEquals: {'s3:max-keys': ['5', '10']}}, {'s3:max-keys': '10'}, 'ImplicitlyDenied'],
+      [{NumericLessThanIfExists: {'s3:max-keys': '10'}}, {}, 'Allowed'],
+      [{NumericNotEquals: {'s3:max-keys': '10'}}, {}, 'Allowed'],
       [{StringEquals: {'aws:PrincipalOrgID': ['o-trusted','o-other']}}, {'aws:principalorgid': 'o-trusted'}, 'Allowed'],
       [{StringEquals: {'aws:SourceVpc': 'vpc-one'}, StringNotEquals: {'aws:SourceVpc': 'vpc-two'}}, {'aws:SourceVpc': 'vpc-one'}, 'Allowed'],
       [{StringEquals: {'aws:PrincipalOrgID': 'o-trusted'}}, {}, 'ImplicitlyDenied'],
@@ -88,12 +115,24 @@ exports.run = async function () {
     await setPolicy({Statement: {Effect: 'Allow', Action: 's3:*', NotResource: 'arn:aws:s3:::example-uploads/private/*'}});
     assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, request)).decision, 'Allowed');
     assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request, resource: 'arn:aws:s3:::example-uploads/private/key'})).decision, 'ImplicitlyDenied');
+    for (const [resource, context, expected] of [
+      ['arn:aws:s3:::example-uploads/${aws:username}/*', {'aws:username': 'alice'}, 'Allowed'],
+      ['arn:aws:s3:::example-uploads/${aws:username}/*', {}, 'ImplicitlyDenied'],
+      ["arn:aws:s3:::example-uploads/${aws:username, 'alice'}/*", {}, 'Allowed']
+    ]) {
+      await setPolicy({Version: '2012-10-17', Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: resource}});
+      assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request, resource: 'arn:aws:s3:::example-uploads/alice/photo.jpg', context})).decision, expected);
+    }
+    checks.push('IAM variables use explicit single-valued context, defaults and literal wildcard substitutions');
+    await setPolicy({Statement: {Effect: 'Allow', Action: 'sqs:SendMessage', Resource: 'arn:aws:sqs'}});
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs:eu-west-1:123456789012:jobs'})).decision, 'Allowed');
     for (const [value, error] of [
+      [{Statement: {Effect: 'Allow', Action: 's3:GetObjet', Resource: '*'}}, /does not exist/],
       [{Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*', Condition: {Bool: {'aws:SecureTransport': ['true', 'false']}}}}, /Bool requires a single/],
       [{Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*', Condition: {StringEquals: {'aws:SourceVpc': 'vpc-one'}, StringNotEquals: {'AWS:SOURCEVPC': 'vpc-two'}}}}, /Duplicate condition key/i],
-      [{Statement: [{Effect: 'Allow', Action: '*', Resource: '*'}, {Effect: 'Deny', Action: 'ec2:*', Resource: '*', Condition: {IpAddress: {'aws:SourceIp': '10.0.0.0/8'}}}]}, /Unsupported condition operator/],
+      [{Statement: [{Effect: 'Allow', Action: '*', Resource: '*'}, {Effect: 'Deny', Action: 'ec2:*', Resource: '*', Condition: {UnknownOperator: {'aws:SourceIp': '10.0.0.0/8'}}}]}, /Unsupported condition operator/],
       [{Statement: {Effect: 'Allow', Principal: '*', Action: '*', Resource: '*'}}, /Unsupported statement field/],
-      [{Statement: {Effect: 'Allow', Action: '*', Resource: 'arn:aws:s3:::example-uploads/${aws:username}/*'}}, /Policy variables/],
+      [{Version: '2012-10-17', Statement: {Effect: 'Allow', Action: '*', Resource: 'arn:aws:s3::${aws:PrincipalAccount}:example-uploads/*'}}, /resource portion/],
       ['{"Statement":{"Effect":"Allow","Action":"*","Resource":"*","Resource":"arn:aws:s3:::other/*"}}', /Duplicate JSON property/],
       [{Statement: {Effect: 'Allow', Action: 'broken-action', Resource: '*'}}, /Invalid Action/]
     ]) {
@@ -106,6 +145,23 @@ exports.run = async function () {
     await setPolicy({Statement: {Effect: 'Allow', Action: 's3:ListAllMyBuckets', Resource: '*'}});
     assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request, action: 's3:ListAllMyBuckets', resource: '*'})).decision, 'Allowed');
     checks.push('NotResource exclusions; reject unsupported policies, duplicate properties, unknown actions and multi-resource requests');
+    const templateUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'template.yaml'));
+    const templateOptions = {policyId: '/Resources/UploadsPolicy/Properties/PolicyDocument', templateValues: {Bucket: 'example-uploads'}};
+    const templateResult = await vscode.commands.executeCommand('iamPolicyDebugger.simulate', templateUri, request, templateOptions);
+    assert.equal(templateResult.decision, 'Allowed');
+    const templateDocument = await vscode.workspace.openTextDocument(templateUri);
+    assert.match(templateDocument.getText().slice(templateResult.statements[0].start, templateResult.statements[0].end), /Sid: ReadUploads/);
+    await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.simulate', templateUri, request, {...templateOptions, templateValues: {}}), /Bucket/);
+    const terraformUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'policies.tf'));
+    const terraformOptions = {policyId: 'resource.aws_iam_policy.uploads.policy', templateValues: {'var.bucket': 'example-uploads'}};
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, {...request, resource: 'arn:aws:s3:::example-uploads/alice/photo.jpg', context: {'aws:username': 'alice'}}, terraformOptions)).decision, 'Allowed');
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, {...request, action: 's3:DeleteObject', context: {'aws:SourceIp': '192.0.2.1'}}, {policyId: 'data.aws_iam_policy_document.delete'})).decision, 'ExplicitlyDenied');
+    await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, request), /Choose.*policy/i);
+    await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, request, {...terraformOptions, templateValues: {}}), /var.bucket/);
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, {...request, resource: 'arn:aws:s3:::example-uploads/alice/photo.jpg', context: {'aws:username':'alice'}}, {policyId: 'data.aws_iam_policy_document.home'})).decision, 'Allowed');
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, {...request, context: {'s3:prefix':'*'}}, {policyId: 'resource.aws_iam_policy.literal.policy'})).decision, 'Allowed');
+    checks.push('debug selected CloudFormation and Terraform policies, resolve supplied template values, and retain source navigation');
+    await vscode.commands.executeCommand('iamPolicyDebugger.debugPolicy', templateUri);
     await vscode.commands.executeCommand('iamPolicyDebugger.debugPolicy', policyUri);
     await new Promise(resolve => {const subscription = vscode.window.tabGroups.onDidChangeTabs(() => {subscription.dispose(); resolve();}); setTimeout(() => {subscription.dispose(); resolve();}, 1500);});
     assert.ok(vscode.window.tabGroups.all.some(group => group.tabs.some(tab => tab.input instanceof vscode.TabInputWebview )), 'Debugger opens a webview beside the policy');
@@ -151,6 +207,13 @@ exports.run = async function () {
     const concurrent = JSON.parse(await fs.readFile(scenarioFile.fsPath, 'utf8'));
     assert.deepEqual(concurrent.tests.map(test => test.name).sort(), ['Read uploads', 'Concurrent short', 'Concurrent longer name that must preserve the first scenario'].sort());
     checks.push('concurrent saves preserve both scenarios and valid persisted JSON');
+    const templateSuiteUri = await vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', templateUri,
+      {name: 'Read template uploads', expected: 'Allowed', request, ...templateOptions});
+    const templateSuite = JSON.parse(await fs.readFile(templateSuiteUri.fsPath, 'utf8'));
+    assert.equal(templateSuite.tests[0].policyId, templateOptions.policyId);
+    assert.deepEqual(templateSuite.tests[0].templateValues, templateOptions.templateValues);
+    assert.deepEqual((await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', templateSuiteUri)).map(item => item.status), ['passed']);
+    checks.push('embedded policy selection and template values persist and run through the Testing panel');
     const validationUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'validation.json'));
     await vscode.workspace.fs.writeFile(validationUri, Buffer.from(JSON.stringify({Version: '2012-10-17', Statement: {Effect: 'Permit', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'}}, null, 2)));
     const validationDocument = await vscode.workspace.openTextDocument(validationUri);
@@ -196,6 +259,7 @@ exports.run = async function () {
       [{Statement: {Effect: 'Allow', Action: 's3:MadeUpAction', Resource: '*'}}, 'INVALID_ACTION', '"s3:MadeUpAction"'],
       [{Statement: {Effect: 'Allow', Action: '*', NotAction: '*', Resource: '*'}}, 'UNSUPPORTED_ELEMENT_COMBINATION'],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: 42}}, 'INVALID_RESOURCE_TYPE', '42'],
+      [{Statement: {Effect: 'Allow', NotPrincipal: '*', Action: 's3:GetObject', Resource: '*'}}, 'INVALID_NOT_PRINCIPAL', '"*"'],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {Bool: {'aws:SecureTransport': ['true','false']}}}}, 'INVALID_CONDITION_MULTIPLE_BOOLEAN'],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {StringEquals: {'aws:SourceVpc': 'vpc-one', 'AWS:SOURCEVPC': 'vpc-two'}}}}, 'DUPLICATE_KEYS_WITH_DIFFERENT_CASE'],
       ['{"Statement":{"Effect":"Allow","Effect":"Deny","Action":"*","Resource":"*"}}', 'DUPLICATE_JSON_KEY', '"Effect"'],
@@ -208,6 +272,10 @@ exports.run = async function () {
       if (underlined) assert.equal(validationDocument.getText(item.range), underlined, code);
     }
     await editValidation({Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {AWS: 'arn:aws:iam::123456789012:root'}, Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/${aws:username}/*', Condition: {NumericLessThan: {'s3:max-keys': 10}, IpAddress: {'aws:SourceIp': '10.0.0.0/8'}}}});
+    await waitDiagnostics(items => items.length === 0);
+    await editValidation({Version: '2012-10-17', Statement: {Effect:'Permit', Action:'s3:GetObject', Resource:'*'}});
+    await waitDiagnostics(items => items.some(item => item.code === 'INVALID_EFFECT'));
+    await editValidation({Version: '2012-10-17', Statement: {Effect:'Allow', Principal:{Service:'rolesanywhere.amazonaws.com'}, Action:['sts:AssumeRole','sts:TagSession','sts:SetSourceIdentity']}});
     await waitDiagnostics(items => items.length === 0);
     checks.push('structural, JSON, catalog and condition findings have precise ranges; valid resource policies, variables and non-simulator conditions are accepted');
     for (const [statement, expectedCodes] of [
@@ -235,9 +303,33 @@ exports.run = async function () {
     await waitDiagnostics(items => items.length === 0);
     assert.ok(!vscode.languages.getDiagnostics(scenarioFile).some(item => item.source === 'IAM Policy'));
     checks.push('ordinary JSON and scenario files are excluded; changing language clears policy diagnostics');
+    for (const [uri, before, after, token] of [
+      [templateUri, 'Effect: Allow', 'Effect: Permit', 'Permit'],
+      [terraformUri, 'Effect = "Allow"', 'Effect = "Permit"', 'Permit'],
+      [terraformUri, 'Effect = "Allow"', 'Effect = "Per${"mit"}"', 'Per${"mit"}']
+    ]) {
+      const document = await vscode.workspace.openTextDocument(uri);
+      const original = document.getText();
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(original.length)), original.replace(before, after));
+      await vscode.workspace.applyEdit(edit);
+      const deadline = Date.now() + 5000;
+      let finding;
+      while (Date.now() < deadline && !finding) {
+        finding = vscode.languages.getDiagnostics(uri).find(item => item.source === 'IAM Policy' && item.code === 'INVALID_EFFECT');
+        if (!finding) await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.ok(finding, `Embedded diagnostics missing for ${uri.fsPath}`);
+      assert.equal(document.getText(finding.range), token);
+      const restore = new vscode.WorkspaceEdit();
+      restore.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), original);
+      await vscode.workspace.applyEdit(restore);
+    }
+    checks.push('CloudFormation and Terraform live findings underline the original template value');
     if (process.env.IAM_UI_TEST === '1') {
       await setPolicy(JSON.stringify(policy, null, 2));
       await conditionalDocument.save();
+      await templateDocument.save();
       await vscode.workspace.fs.delete(scenarioFile);
       const showcaseUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'pass-role.json'));
       await vscode.workspace.fs.writeFile(showcaseUri, Buffer.from(JSON.stringify({Version: '2012-10-17', Statement: [
@@ -245,6 +337,7 @@ exports.run = async function () {
         {Sid: 'PassDeploymentRole', Effect: 'Allow', Action: 'iam:PassRole', Resource: '*'}
       ]}, null, 2)));
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      await vscode.commands.executeCommand('workbench.action.editorLayoutSingle');
       await vscode.window.showTextDocument(conditionalDocument, vscode.ViewColumn.One);
       await vscode.commands.executeCommand('iamPolicyDebugger.debugPolicy', conditionalUri);
       console.log('IAM_UI_READY');

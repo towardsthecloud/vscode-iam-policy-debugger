@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { readSuite, policyUriFor } from './scenarios';
-import { simulatePolicy } from './simulation';
+import {simulateDocument} from './policies';
 
 export interface ScenarioOutcome { name: string; status: 'passed' | 'failed' | 'errored' | 'skipped'; actual?: string; error?: string }
 export class ScenarioTests implements vscode.Disposable {
@@ -74,7 +74,7 @@ export class ScenarioTests implements vscode.Disposable {
         try {
           const policyUri = policyUriFor(uri, scenario.policy);
           const policy = await vscode.workspace.openTextDocument(policyUri);
-          const result = await simulatePolicy(policy.getText(), scenario.request);
+          const result = await simulateDocument(policy.getText(), policyUri.fsPath, scenario.request, {policyId: scenario.policyId, templateValues: scenario.templateValues});
           if (result.decision === scenario.expected) {
             run.passed(item, Date.now() - started);
             outcomes.push({name: scenario.name, status: 'passed', actual: result.decision});

@@ -1,8 +1,10 @@
 # AWS IAM Policy Debugger
 
+<img src="images/iam-policy-debugger-extension-icon.png" alt="IAM Policy Debugger icon" width="96">
+
 **Unpublished development preview.** This extension is not available in the VS Code Marketplace. Build a local VSIX from this checkout to try it.
 
-Validate IAM JSON while you edit, explain an identity-policy access decision, and keep the expected outcome as a regression test. Everything runs locally in VS Code. No AWS credentials are required.
+Validate IAM policies while you edit, explain an identity-policy access decision, and keep the expected outcome as a regression test. Everything runs locally in VS Code. No AWS credentials are required.
 
 - Catch policy errors and security warnings as editor squiggles and Problems entries.
 - See why each statement matched or failed: action, resource, and individual conditions.
@@ -10,6 +12,8 @@ Validate IAM JSON while you edit, explain an identity-policy access decision, an
 - Save a named scenario and choose its expected outcome.
 - Discover and run `*.iam-tests.json` files in the Testing panel.
 - Test current editor contents, including unsaved policy changes.
+- Debug policies inside CloudFormation JSON/YAML and Terraform files with explicit template values.
+- Run the same saved scenarios in CI with a local CLI.
 
 ## See it in action
 
@@ -26,6 +30,12 @@ Spot broad permissions and `iam:PassRole` on every role, with findings located o
 Inspect each statement's action, resource and condition matches beside the policy. Save the request and its expected decision as a named scenario.
 
 ![IAM debugger explains matching statements beside the policy](docs/images/policy-debugger.png)
+
+### Debug a policy inside a template
+
+Select an embedded policy and supply its template references explicitly. The same selection and values are saved with the scenario for VS Code and CI.
+
+![CloudFormation policy with explicit template values and a matching Allow statement](docs/images/policy-template.png)
 
 ### Run policy regression tests
 
@@ -51,18 +61,18 @@ npm run package
 
 Run **Extensions: Install from VSIX** in VS Code and select `.vscode-test/iam-policy-debugger.vsix`. You can also press F5 after `npm run compile` to open an Extension Development Host with the examples workspace.
 
-1. Open a trusted local workspace containing a standalone identity-policy JSON file. The [examples](examples/) include an uploads policy and 2 scenarios.
-2. Open the policy and run **IAM: Debug Access for Current Policy** from the Command Palette. It is also available in the editor toolbar and Explorer context menu.
+1. Open a trusted local workspace containing identity-policy JSON, CloudFormation JSON/YAML or Terraform files. The [examples](examples/) include standalone and template policies with saved scenarios.
+2. Open the file and run **IAM: Debug Access for Current Policy** from the Command Palette. It is also available in the editor toolbar and Explorer context menu. If the file contains multiple policies, choose one from the policy picker.
 3. Enter a concrete IAM user/role ARN, action, resource ARN, and resource account ID. Use `aws` as the account ID for an AWS-owned ARN such as `arn:aws:iam::aws:policy/AWSLambdaExecute`. For the uploads example, use `s3:GetObject` and `arn:aws:s3:::example-uploads/photo.jpg` in account `123456789012`.
 4. Supply request context explicitly, for example `{"aws:SecureTransport":"true"}`. Principal/account fields identify the scenario; they do **not** automatically populate condition keys such as `aws:PrincipalArn` or `aws:ResourceAccount`.
-5. Click **Simulate access**. Expand the scope description and inspect each statement. Click a statement’s **Open** button to select its source.
+5. For embedded policies, supply **Template values** separately from request context, for example `{"Bucket":"example-uploads"}` for CloudFormation or `{"var.bucket":"example-uploads"}` for Terraform. Click **Simulate access**. Expand the scope description and inspect each statement. Click a statement’s **Open** button to select its source.
 6. Give the scenario a name and choose **Allowed**, **Explicitly denied**, or **Implicitly denied**. Save it, then run it in the Testing panel.
 
 The policy must be saved before you save a scenario. Saves to the same scenario file are serialized within an extension host. Existing scenarios are preserved; duplicate names and dirty scenario files produce errors. Changing the request or policy clears the debugger result until you simulate again.
 
 ## Policy validation
 
-Open a standalone JSON policy. Documents with a top-level `Statement` or an IAM language `Version` are recognized automatically. Findings update with unsaved edits; ordinary project JSON and `*.iam-tests.json` suites are excluded. Open documents are checked after activation, including policies opened later in the session.
+Open an IAM JSON policy, CloudFormation JSON/YAML template or Terraform file. Documents with a top-level `Statement` or an IAM language `Version` are recognized automatically. Findings update with unsaved edits; ordinary project JSON and `*.iam-tests.json` suites are excluded. Open documents are checked after activation, including policies opened later in the session. Embedded findings point to template source; unresolved references appear as informational findings and require explicit values before simulation.
 
 Errors cover strict JSON syntax, duplicate JSON keys, required statement elements, conflicting element pairs, effects, versions, data types, ARN shape, concrete action names in the bundled catalog, condition structure, invalid condition operators, multiple Bool values, and condition keys with conflicting capitalization. Warnings cover missing versions, wildcard actions/resources, public principals, broad `iam:PassRole`, and Allow statements using `NotAction` or `NotResource`.
 
@@ -81,22 +91,36 @@ This is a policy-matching tool, not an effective-permissions calculation or a li
 | Identity-policy JSON   | Single statement or array; strict JSON without comments                 |
 | Allow / Deny           | Explicit Deny takes precedence                                          |
 | Action / NotAction     | String or array; `*` and `?`; case-insensitive                          |
-| Resource / NotResource | String or array; `*` and `?`; case-sensitive                            |
+| Resource / NotResource | String or array; `*` and `?`; incomplete identity ARNs filled with wildcards; case-sensitive                            |
 | String conditions      | Equals, NotEquals, EqualsIgnoreCase, NotEqualsIgnoreCase, Like, NotLike |
 | ARN conditions         | Equals, Like, NotEquals, NotLike; component-wise wildcards              |
+| Numeric conditions     | Equals, NotEquals, LessThan, LessThanEquals, GreaterThan, GreaterThanEquals |
+| Date conditions        | The same comparisons using ISO 8601 timestamps or epoch seconds         |
+| IP conditions          | IpAddress / NotIpAddress; IPv4 and IPv6 addresses and CIDRs               |
+| IAM policy variables   | Single-valued context substitutions and defaults in Resource and String/ARN values |
 | Boolean / existence    | Bool and Null                                                           |
 | Optional keys          | IfExists for supported operators except Null                            |
-| Multivalue context     | ForAnyValue and ForAllValues for String and ARN operators               |
+| Multivalue context     | ForAnyValue and ForAllValues for String, ARN, Numeric, Date and IP operators               |
 
 Conditions across keys/operators use AND. Positive policy values use OR; negated values use NOR. Missing-key and empty-set behavior follows the supported AWS condition operators. Unqualified operators require a single request value; use a set operator for arrays containing multiple values. Combining set qualifiers with IfExists is not supported.
 
-Unsupported operators (including Numeric, Date, IP, and Binary), policy variables, Principal/NotPrincipal, and malformed policy features return errors even in unmatched statements. IAM role sessions, anonymous/service principals, and actions requiring multiple required resource types are not supported. Use `*` as the request resource only for actions without resource-level permissions. The bundled MIT IAM catalog validates action names and resource types; it is a release snapshot, not a live catalog.
+Unsupported operators (including BinaryEquals), Principal/NotPrincipal, and malformed policy features return errors even in unmatched statements. IAM role sessions, anonymous/service principals, and actions requiring multiple required resource types are not supported. Use `*` as the request resource only for actions without resource-level permissions. The bundled MIT IAM catalog validates action names and resource types; it is a release snapshot, not a live catalog.
 
 AWS references: [policy evaluation](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html), [condition operators](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html).
 
+## Embedded policies
+
+CloudFormation JSON/YAML policies are selected by JSON pointer, for example `/Resources/UploadsPolicy/Properties/PolicyDocument`. `Ref`, `Fn::GetAtt`, `Fn::Sub` and `Fn::Join` are supported inside the policy. Supply values for references such as `Bucket`, `AWS::AccountId` or `Bucket.Arn`; parameters and pseudo parameters are not inferred. In `Fn::Sub`, use `${!aws:username}` to preserve an IAM variable.
+
+Terraform supports literal/heredoc JSON and `jsonencode` policies in `aws_iam_policy`, inline user/group/role policy resources and `aws_iam_role.inline_policy`. It also supports literal `aws_iam_policy_document` statement and condition blocks. Choose an address such as `resource.aws_iam_policy.uploads.policy` or `data.aws_iam_policy_document.delete`. Supply references by their full expression, such as `var.bucket`. Escape IAM variables as `$${aws:username}` in Terraform templates, or `&{aws:username}` in `aws_iam_policy_document` blocks.
+
+The extension does not execute Terraform, read state, contact AWS, or evaluate arbitrary functions, loops, dynamic blocks, policy-document merges or unsupported CloudFormation intrinsics. These produce errors instead of guessed decisions. CDK users can inspect policies in synthesized CloudFormation output; TypeScript/Python CDK source is not evaluated. See [template examples](examples/templates.iam-tests.json).
+
+IAM policy variables require `Version: "2012-10-17"`. Resource substitutions are restricted to the resource portion after the fifth colon. Conditions support substitutions in String and ARN values. Context values must be single-valued; missing variables do not match positive operators. Defaults such as `${aws:PrincipalTag/team, 'shared'}` are supported.
+
 ## Scenario format
 
-Each scenario file contains `version: 1` and a `tests` array. The extension supplies JSON completion and validation for these files. Policy paths are relative to the scenario file and must stay inside its workspace folder.
+Each scenario file contains `version: 1` and a `tests` array. The extension supplies JSON completion and validation for these files. Policy paths are relative to the scenario file and must stay inside its workspace folder. Embedded scenarios also save `policyId` and `templateValues`; existing standalone scenario files remain compatible.
 
 ```json
 {
@@ -120,6 +144,37 @@ Context values are strings or arrays of strings. Use `"true"` / `"false"` for re
 
 Run all or selected scenarios from the Testing panel, or use **IAM: Run Scenarios in Current File**. Mismatches appear as failed tests; invalid or unsupported policy inputs appear as errors. The Testing panel output includes the evaluation scope.
 
+## Run scenarios in CI
+
+The CLI uses the same evaluator and scenario format as VS Code. Build this unpublished preview from a checkout, then run:
+
+```sh
+npm ci
+npm run compile
+node out/cli.cjs examples --root .
+node out/cli.cjs examples --root . --json > iam-results.json
+```
+
+It reads saved files; VS Code's Testing panel can also use unsaved buffers. Directory discovery skips `node_modules`, `.git`, `.vscode-test`, `out` and symbolic links. The default root and target are the current directory. Policy files and suite files must stay inside the root, including resolved symbolic links. Use `--root` when running from another directory.
+
+Exit codes are **0** when every scenario passes, **1** for an expectation mismatch, and **2** for invalid input, unsupported policies, unresolved references or no scenarios. Empty suites fail rather than give a false green check. JSON output includes the scope, counts and each scenario's actual decision or error.
+
+For GitHub Actions, after checkout and Node setup, use a step like this in your policy repository (with this preview checkout at `tools/iam-policy-debugger`):
+
+```yaml
+- name: Test IAM policies
+  run: |
+    npm ci --prefix tools/iam-policy-debugger
+    npm run compile --prefix tools/iam-policy-debugger
+    node tools/iam-policy-debugger/out/cli.cjs policies --root . --json
+```
+
+## Related extensions
+
+- [AWS IAM Actions Snippets](https://marketplace.visualstudio.com/items?itemName=dannysteenman.iam-actions-snippets) completes IAM actions and explains wildcard matches while authoring policies.
+- [AWS IAM Service Principal Snippets](https://marketplace.visualstudio.com/items?itemName=dannysteenman.iam-service-principal-snippets) completes service principals in trust policies and CDK roles.
+- The [Terraform](https://github.com/towardsthecloud/vscode-terraform-extension-pack), [CloudFormation](https://github.com/towardsthecloud/vscode-cloudformation-extension-pack) and [CDK](https://github.com/towardsthecloud/vscode-cdk-extension-pack) extension packs are being updated to include this debugger after its Marketplace release.
+
 ## Development
 
 Scaffold adapted from [AWS IAM Actions Snippets](https://github.com/towardsthecloud/vscode-iam-actions-snippets).
@@ -139,4 +194,4 @@ For interactive UI validation, run `IAM_UI_TEST=1 npm run test:integration -- st
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The policy evaluator is independently implemented. The bundled [ACT Security Labs IAM catalog](https://github.com/act-security-labs/iam-data) is MIT-licensed; its license is retained in `licenses/iam-data.txt`. No ACT simulator code is included.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The policy evaluator is independently implemented. The bundled [ACT Security Labs IAM catalog](https://github.com/act-security-labs/iam-data) is MIT-licensed; its license is retained in `licenses/iam-data.txt`. No ACT simulator code is included. JSON parsing and IP handling use MIT dependencies; YAML uses ISC. The unmodified Terraform parser is distributed separately under MPL-2.0 with its license and source link in NOTICE. These dependency licenses are retained; this repository’s own code remains Apache-2.0.

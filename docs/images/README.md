@@ -35,4 +35,4 @@ cp .vscode-test/results/policy-scenarios.png docs/images/policy-scenarios.png
 cp .vscode-test/results/policy-template.png docs/images/policy-template.png
 ```
 
-The temporary profile settings only affect the sandbox host. Marketplace publishing and release automation remain separate work.
+The temporary profile settings only affect the sandbox host. Captures do not publish; the release workflow publishes validated tagged releases when the required registry secrets are configured.

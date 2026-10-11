@@ -38,11 +38,17 @@ export class ScenarioTests implements vscode.Disposable {
     for (const uri of uris) await this.discover(uri);
   }
 
-  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
+  private rootFor(uri: vscode.Uri): vscode.TestItem {
     const id = uri.toString();
     this.files.set(id, uri);
     const root = this.controller.items.get(id) ?? this.controller.createTestItem(id, vscode.workspace.asRelativePath(uri), uri);
     this.controller.items.add(root);
+    return root;
+  }
+
+  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
+    const root = this.rootFor(uri);
+    const id = uri.toString();
     let items: vscode.TestItem[] = [];
     try {
       const suite = snapshot ?? await readSuite(uri);
@@ -62,14 +68,26 @@ export class ScenarioTests implements vscode.Disposable {
 
   async runFile(uri: vscode.Uri, request?: vscode.TestRunRequest, token?: vscode.CancellationToken, existingRun?: vscode.TestRun): Promise<ScenarioOutcome[]> {
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before running IAM scenarios.');
-    const suite = await readSuite(uri);
-    // Discovery returns the items it created; concurrent runs can replace the
-    // live root before this await resumes without changing this snapshot.
-    const {root, items} = await this.discover(uri, suite);
+    const root = this.rootFor(uri);
     const run = existingRun ?? this.controller.createTestRun(new vscode.TestRunRequest([root]));
     const outcomes: ScenarioOutcome[] = [];
     const selected = (item: vscode.TestItem, list?: readonly vscode.TestItem[]): boolean => list?.some(candidate => candidate.id === item.id || candidate.id === root.id) ?? false;
     try {
+      if (selected(root, request?.exclude)) return outcomes;
+      let suite: ScenarioSuite;
+      try {
+        suite = await readSuite(uri);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        root.children.replace([]);
+        root.error = message;
+        run.errored(root, new vscode.TestMessage(message));
+        outcomes.push({name: root.label, status: 'errored', error: message});
+        return outcomes;
+      }
+      // Discovery returns the items it created; concurrent runs can replace the
+      // live root before this await resumes without changing this snapshot.
+      const {items} = await this.discover(uri, suite);
       for (const [index, scenario] of suite.tests.entries()) {
         const item = items[index];
         if ((request?.include && !selected(item, request.include)) || selected(item, request?.exclude)) continue;

@@ -11,7 +11,7 @@ function expressionRange(node: Expression, expression: string, bytes: Buffer): S
   let start = bytes.subarray(0, node.range.start.byte).toString().length;
   let end = bytes.subarray(0, node.range.end.byte).toString().length;
   // HCL reports only the opening brace or first fragment for these nodes.
-  const raw = node.type === 'template' || node.type === 'object' ? node.meta.value : undefined;
+  const raw = node.type === 'template' || node.type === 'object' || node.type === 'tuple' ? node.meta.value : undefined;
   const beginning = raw ? expression.lastIndexOf(raw, start) : -1;
   if (raw && beginning >= 0 && beginning + raw.length >= end) {
     const quoted = node.type === 'template' && raw.startsWith('"') && raw.endsWith('"');
@@ -64,6 +64,36 @@ function hclTokens(text: string): HclToken[] {
     start = end;
   }
   return tokens;
+}
+
+function inlinePolicyRanges(tokens: HclToken[], start: number, end: number): {range: SourceRange; search: SourceRange}[] {
+  const ranges: {range: SourceRange; search: SourceRange}[] = [];
+  for (let index = start + 4, depth = 1; index < end; index++) {
+    if (depth === 1 && tokens[index].value === 'inline_policy' && tokens[index + 1]?.value === '{') {
+      let nested = 1, close = index + 2;
+      for (; close < end && nested; close++) {
+        if (tokens[close].value === '{') nested++;
+        if (tokens[close].value === '}') nested--;
+      }
+      const range = {start: tokens[index].start, end: tokens[close - 1].end};
+      let search = range;
+      for (let attribute = index + 2, attributeDepth = 1; attribute < close - 1; attribute++) {
+        if (attributeDepth === 1 && tokens[attribute].value === 'policy' && tokens[attribute + 1]?.value === '=') {
+          const value = tokens[attribute + 2];
+          if (value) search = {start: value.start, end: range.end};
+          break;
+        }
+        if (tokens[attribute].value === '{') attributeDepth++;
+        if (tokens[attribute].value === '}') attributeDepth--;
+      }
+      ranges.push({range, search});
+      index = close - 1;
+      continue;
+    }
+    if (tokens[index].value === '{') depth++;
+    if (tokens[index].value === '}') depth--;
+  }
+  return ranges;
 }
 
 async function policyDocumentRanges(text: string, tokens: HclToken[], block: Record<string, unknown>, filename: string): Promise<Map<string, SourceRange>> {
@@ -134,6 +164,7 @@ export async function terraformPolicies(text: string, filename: string): Promise
       }
       const range = {start: tokens[first].start, end: tokens[last].end};
       const base = `${kind}.${type}.${name}`;
+      const inlineRanges = inlinePolicyRanges(tokens, first, last);
       if (kind === 'data') sources.push({id: base, ...range, load: async (values, tolerant = false) => {
         const unresolved: string[] = [];
         for (const key of Object.keys(block)) if (!['statement', 'version', 'policy_id'].includes(key)) throw new Error(`Unsupported policy-document attribute: ${key}. Use a resolved policy document.`);
@@ -152,14 +183,18 @@ export async function terraformPolicies(text: string, filename: string): Promise
         const inline = block.inline_policy;
         if (Array.isArray(inline)) inline.forEach((item, index) => {
           const policy = object(item).policy;
-          if (policy !== undefined) sources.push(policySource(policy, `${base}.inline_policy.${index}.policy`, range, text, filename));
+          if (policy !== undefined) {
+            const syntax = inlineRanges[index];
+            if (!syntax) throw new Error(`Could not locate Terraform inline policy: ${base}.inline_policy.${index}`);
+            sources.push(policySource(policy, `${base}.inline_policy.${index}.policy`, syntax.range, text, filename, syntax.search));
+          }
         });
       }
     }
   }
   return sources;
 }
-function policySource(input: unknown, id: string, range: SourceRange, source: string, filename: string): PolicySource {
+function policySource(input: unknown, id: string, range: SourceRange, source: string, filename: string, searchRange = range): PolicySource {
   return {id, ...range, load: async (values, tolerant = false) => {
     const unresolved: string[] = [], ranges = new Map<string, SourceRange>();
     let value: unknown;
@@ -168,7 +203,8 @@ function policySource(input: unknown, id: string, range: SourceRange, source: st
     if (evaluated) {
       const expression = input.slice(2, -1);
       const ast = await getExpressionAst(filename, expression);
-      const offset = source.indexOf(expression, range.start);
+      const found = source.indexOf(expression, searchRange.start);
+      const offset = found >= 0 && found + expression.length <= searchRange.end ? found : -1;
       const bytes = Buffer.from(expression);
       value = evaluate(ast, expression, values, tolerant, unresolved, [], (path, node) => {
         if (offset < 0 || ranges.has(pointer(path))) return;

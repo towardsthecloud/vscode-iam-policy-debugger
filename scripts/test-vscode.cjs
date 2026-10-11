@@ -1,12 +1,13 @@
 // Adapted from vscode-iam-actions-snippets/scripts/test-vscode.cjs (Apache-2.0).
 const {runTests} = require('@vscode/test-electron');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const {execFileSync} = require('node:child_process');
 
 (async () => {
   const version = process.argv[2] || 'stable';
-  const run = await fs.mkdtemp(path.resolve('.vscode-test/run-'));
+  const run = await fs.mkdtemp(path.join(os.tmpdir(), 'iam-tests-'));
   const packaged = path.join(run, 'packaged');
   const workspace = path.join(run, 'workspace');
   await fs.mkdir(packaged); await fs.mkdir(workspace);

@@ -86,21 +86,21 @@ This is a policy-matching tool, not an effective-permissions calculation or a li
 
 ## Supported policy features
 
-| Feature                | Support                                                                 |
-| ---------------------- | ----------------------------------------------------------------------- |
-| Identity-policy JSON   | Single statement or array; strict JSON without comments                 |
-| Allow / Deny           | Explicit Deny takes precedence                                          |
-| Action / NotAction     | String or array; `*` and `?`; case-insensitive                          |
-| Resource / NotResource | String or array; `*` and `?`; incomplete identity ARNs filled with wildcards; case-sensitive                            |
-| String conditions      | Equals, NotEquals, EqualsIgnoreCase, NotEqualsIgnoreCase, Like, NotLike |
-| ARN conditions         | Equals, Like, NotEquals, NotLike; component-wise wildcards              |
-| Numeric conditions     | Equals, NotEquals, LessThan, LessThanEquals, GreaterThan, GreaterThanEquals |
-| Date conditions        | The same comparisons using ISO 8601 timestamps or epoch seconds         |
-| IP conditions          | IpAddress / NotIpAddress; IPv4 and IPv6 addresses and CIDRs               |
-| IAM policy variables   | Single-valued context substitutions and defaults in Resource and String/ARN values |
-| Boolean / existence    | Bool and Null                                                           |
-| Optional keys          | IfExists for supported operators except Null                            |
-| Multivalue context     | ForAnyValue and ForAllValues for String, ARN, Numeric, Date and IP operators               |
+| Feature                | Support                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| Identity-policy JSON   | Single statement or array; strict JSON without comments                                      |
+| Allow / Deny           | Explicit Deny takes precedence                                                               |
+| Action / NotAction     | String or array; `*` and `?`; case-insensitive                                               |
+| Resource / NotResource | String or array; `*` and `?`; incomplete identity ARNs filled with wildcards; case-sensitive |
+| String conditions      | Equals, NotEquals, EqualsIgnoreCase, NotEqualsIgnoreCase, Like, NotLike                      |
+| ARN conditions         | Equals, Like, NotEquals, NotLike; component-wise wildcards                                   |
+| Numeric conditions     | Equals, NotEquals, LessThan, LessThanEquals, GreaterThan, GreaterThanEquals                  |
+| Date conditions        | The same comparisons using ISO 8601 timestamps or epoch seconds                              |
+| IP conditions          | IpAddress / NotIpAddress; IPv4 and IPv6 addresses and CIDRs                                  |
+| IAM policy variables   | Single-valued context substitutions and defaults in Resource and String/ARN values           |
+| Boolean / existence    | Bool and Null                                                                                |
+| Optional keys          | IfExists for supported operators except Null                                                 |
+| Multivalue context     | ForAnyValue and ForAllValues for String, ARN, Numeric, Date and IP operators                 |
 
 Conditions across keys/operators use AND. Positive policy values use OR; negated values use NOR. Missing-key and empty-set behavior follows the supported AWS condition operators. Unqualified operators require a single request value; use a set operator for arrays containing multiple values. Combining set qualifiers with IfExists is not supported.
 
@@ -191,6 +191,25 @@ npm run package
 Press F5 to launch an Extension Development Host with the examples workspace. Packaging writes `.vscode-test/iam-policy-debugger.vsix`. Integration tests unpack and execute that VSIX in an isolated VS Code profile. On Linux, run `xvfb-run -a npm test`. Reports are saved under `.vscode-test/results/`. CI tests the minimum and stable VS Code releases and produces a VSIX artifact without publishing it.
 
 For interactive UI validation, run `IAM_UI_TEST=1 npm run test:integration -- stable`, attach `playwright-cli -s=iam attach --cdp=http://127.0.0.1:9241`, and run `playwright-cli -s=iam run-code --filename=tests/playwright-ui.cjs`. The test host waits up to 10 minutes; finish with `curl http://127.0.0.1:9242`. The UI script exercises simulation, saving, invalidation, navigation, and a narrow panel. Its screenshot and trace stay in `.vscode-test/results/`. See [capture instructions](docs/images/README.md) for the README screenshots and demo.
+
+## Publish a release
+
+1. Add the repository Actions secrets `VSCE_TOKEN` (Visual Studio Marketplace) and `OPEN_VSX_TOKEN` (Open VSX),
+   with publishing access for `dannysteenman`.
+2. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` for the release, and merge the changes into `main`.
+3. From the intended release commit on `main`, create and push a tag matching the package version,
+   such as `v0.1.0` for version `0.1.0`:
+
+   ```sh
+   version=$(node -p 'require("./package.json").version')
+   git tag "v$version"
+   git push origin "v$version"
+   ```
+
+The release workflow checks the tag and main ancestry, then runs the existing minimum and stable VS Code checks.
+Only after both pass does it publish the stable job's validated VSIX to both registries without rebuilding it.
+Pull requests and pushes to `main` validate without publishing.
+If one registry fails, rerun the release workflow; already-published versions are skipped.
 
 ## License
 

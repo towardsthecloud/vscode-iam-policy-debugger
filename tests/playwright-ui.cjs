@@ -1,10 +1,14 @@
 async page => {
   const checks = [];
-  // Close VS Code notifications so they do not cover the debugger in screenshots.
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Meta+Shift+p');
-  await page.getByPlaceholder('Type the name of a command to run.').fill('Notifications: Clear All Notifications');
-  await page.keyboard.press('Enter');
+  async function clearNotifications() {
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Meta+Shift+p');
+    await page.getByPlaceholder('Type the name of a command to run.').fill('>Notifications: Clear All Notifications');
+    await page.getByText('Notifications: Clear All Notifications', {exact: true}).waitFor({state: 'visible'});
+    await page.keyboard.press('Enter');
+    await page.getByRole('dialog', {name: /notification,/}).first().waitFor({state: 'hidden'});
+  }
+  await clearNotifications();
   let frame;
   for (const candidate of page.frames().slice(1)) {
     if (await candidate.locator('iframe').evaluate(el => el.contentDocument?.querySelector('#policy-name')?.textContent === 'conditional.json')) frame = candidate;
@@ -56,10 +60,12 @@ async page => {
     });
     if (geometry.width > 520 || geometry.width < 250 || geometry.scrollWidth > geometry.width + 1) throw new Error(`Narrow panel overflow: ${JSON.stringify(geometry)}`);
     const result = await element('#result'); await result.scrollIntoViewIfNeeded(); await result.dispose();
+    await clearNotifications();
     await iframe.screenshot({path: '.vscode-test/results/debugger-narrow.png'});
     checks.push(`narrow panel (${geometry.width}px) has no horizontal overflow`);
     await page.setViewportSize({width: 1920, height: 1100});
     await frame.waitForFunction(() => document.querySelector('iframe').contentDocument.documentElement.clientWidth > 520);
+    await clearNotifications();
     await iframe.screenshot({path: '.vscode-test/results/debugger.png'});
     await fill('#action', 'iam:GetPolicy');
     await fill('#account', 'aws');

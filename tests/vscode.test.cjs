@@ -213,6 +213,23 @@ exports.run = async function () {
     assert.equal(templateSuite.tests[0].policyId, templateOptions.policyId);
     assert.deepEqual(templateSuite.tests[0].templateValues, templateOptions.templateValues);
     assert.deepEqual((await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', templateSuiteUri)).map(item => item.status), ['passed']);
+    const outsideDirectory = await fs.mkdtemp(path.join(require('node:os').tmpdir(), 'iam-review-policy-'));
+    const outsidePolicy = path.join(outsideDirectory, 'external.json');
+    const linkedPolicy = path.join(process.env.IAM_TEST_WORKSPACE, 'linked.json');
+    const linkedSuite = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'linked.iam-tests.json'));
+    try {
+      await fs.writeFile(outsidePolicy, JSON.stringify({Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*'}}));
+      await fs.symlink(outsidePolicy, linkedPolicy);
+      await vscode.workspace.fs.writeFile(linkedSuite, Buffer.from(JSON.stringify({version: 1, tests: [{name: 'External symlink', policy: 'linked.json', expected: 'Allowed', request}]})));
+      const linkedOutcomes = await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', linkedSuite);
+      assert.equal(linkedOutcomes[0].status, 'errored', 'Testing panel rejects policies reached through an escaping symlink');
+      assert.match(linkedOutcomes[0].error, /inside.*workspace/);
+    } finally {
+      await fs.unlink(linkedPolicy);
+      await vscode.workspace.fs.delete(linkedSuite);
+      await fs.unlink(outsidePolicy);
+      await fs.rmdir(outsideDirectory);
+    }
     checks.push('embedded policy selection and template values persist and run through the Testing panel');
     const validationUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'validation.json'));
     await vscode.workspace.fs.writeFile(validationUri, Buffer.from(JSON.stringify({Version: '2012-10-17', Statement: {Effect: 'Permit', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'}}, null, 2)));
@@ -259,8 +276,10 @@ exports.run = async function () {
       [{Statement: {Effect: 'Allow', Action: 's3:MadeUpAction', Resource: '*'}}, 'INVALID_ACTION', '"s3:MadeUpAction"'],
       [{Statement: {Effect: 'Allow', Action: '*', NotAction: '*', Resource: '*'}}, 'UNSUPPORTED_ELEMENT_COMBINATION'],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: 42}}, 'INVALID_RESOURCE_TYPE', '42'],
+      [{Statement: {Effect: 'Allow', Principal: {AWS: 'arn:aws:iam::123456789012:role/App*'}, Action: 's3:GetObject', Resource: '*'}}, 'INVALID_PRINCIPAL', '"arn:aws:iam::123456789012:role/App*"'],
       [{Statement: {Effect: 'Allow', NotPrincipal: '*', Action: 's3:GetObject', Resource: '*'}}, 'INVALID_NOT_PRINCIPAL', '"*"'],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {Bool: {'aws:SecureTransport': ['true','false']}}}}, 'INVALID_CONDITION_MULTIPLE_BOOLEAN'],
+      [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {Null: {'aws:TokenIssueTime': ['true','false']}}}}, 'INVALID_CONDITION_MULTIPLE_BOOLEAN'],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {StringEquals: {'aws:SourceVpc': 'vpc-one', 'AWS:SOURCEVPC': 'vpc-two'}}}}, 'DUPLICATE_KEYS_WITH_DIFFERENT_CASE'],
       ['{"Statement":{"Effect":"Allow","Effect":"Deny","Action":"*","Resource":"*"}}', 'DUPLICATE_JSON_KEY', '"Effect"'],
       ['{"Statement": [', 'JSON_SYNTAX_ERROR']
@@ -325,6 +344,43 @@ exports.run = async function () {
       restore.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), original);
       await vscode.workspace.applyEdit(restore);
     }
+    const dataDocument = await vscode.workspace.openTextDocument(terraformUri);
+    const originalDataText = dataDocument.getText();
+    const dataEdit = new vscode.WorkspaceEdit();
+    dataEdit.replace(terraformUri, new vscode.Range(dataDocument.positionAt(0), dataDocument.positionAt(originalDataText.length)), originalDataText.replace('effect = "Deny"', 'effect = "Permit"'));
+    await vscode.workspace.applyEdit(dataEdit);
+    let dataFinding;
+    const dataDeadline = Date.now() + 5000;
+    do {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      dataFinding = vscode.languages.getDiagnostics(terraformUri).find(item => item.source === 'IAM Policy' && item.code === 'INVALID_EFFECT');
+    } while (!dataFinding && Date.now() < dataDeadline);
+    assert.ok(dataFinding, 'Terraform policy-document errors are diagnosed');
+    assert.equal(dataDocument.getText(dataFinding.range), 'Permit', 'a data-policy error underlines the individual field');
+    const dataRestore = new vscode.WorkspaceEdit();
+    dataRestore.replace(terraformUri, new vscode.Range(dataDocument.positionAt(0), dataDocument.positionAt(dataDocument.getText().length)), originalDataText);
+    await vscode.workspace.applyEdit(dataRestore);
+    const mappedDelete = await vscode.commands.executeCommand('iamPolicyDebugger.simulate', terraformUri, {...request, action: 's3:DeleteObject', context: {'aws:SourceIp': '192.0.2.1'}}, {policyId: 'data.aws_iam_policy_document.delete'});
+    const selectedDataStatement = dataDocument.getText().slice(mappedDelete.statements[0].start, mappedDelete.statements[0].end);
+    assert.match(selectedDataStatement, /^statement\s*\{/);
+    assert.ok(selectedDataStatement.includes('s3:DeleteObject') && selectedDataStatement.includes('192.0.2.0/24'), 'statement navigation includes its complete fields and condition');
+    assert.ok(!selectedDataStatement.includes('data "aws_iam_policy_document" "home"'), 'statement navigation excludes following policy blocks');
+    const parameterEdit = new vscode.WorkspaceEdit();
+    const originalTemplate = templateDocument.getText();
+    parameterEdit.replace(templateUri, new vscode.Range(templateDocument.positionAt(0), templateDocument.positionAt(originalTemplate.length)), originalTemplate.replace('Effect: Allow', 'Effect: !Ref PolicyEffect'));
+    await vscode.workspace.applyEdit(parameterEdit);
+    let parameterFindings;
+    const parameterDeadline = Date.now() + 5000;
+    do {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      parameterFindings = vscode.languages.getDiagnostics(templateUri).filter(item => item.source === 'IAM Policy');
+    } while (!parameterFindings.some(item => String(item.message).includes('PolicyEffect')) && Date.now() < parameterDeadline);
+    assert.ok(parameterFindings.some(item => item.code === 'UNRESOLVED_TEMPLATE_VALUES'));
+    assert.ok(!parameterFindings.some(item => item.code === 'INVALID_EFFECT'), 'unresolved Effect is informational until a template value is supplied');
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', templateUri, request, {...templateOptions, templateValues: {Bucket: 'example-uploads', PolicyEffect: 'Allow'}})).decision, 'Allowed');
+    const restoreTemplate = new vscode.WorkspaceEdit();
+    restoreTemplate.replace(templateUri, new vscode.Range(templateDocument.positionAt(0), templateDocument.positionAt(templateDocument.getText().length)), originalTemplate);
+    await vscode.workspace.applyEdit(restoreTemplate);
     checks.push('CloudFormation and Terraform live findings underline the original template value');
     if (process.env.IAM_UI_TEST === '1') {
       await setPolicy(JSON.stringify(policy, null, 2));

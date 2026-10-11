@@ -193,7 +193,7 @@ function conditionsFor(value: unknown, context: AccessRequest['context'], modern
       if (previous !== undefined && previous !== key) throw new Error(`Duplicate condition key with different casing: ${key}`);
       keyNames.set(key.toLowerCase(), key);
       const raw = Array.isArray(expected) ? expected : [expected];
-      if (base === 'Bool' && raw.length !== 1) throw new Error('Bool requires a single Boolean value.');
+      if (['Bool', 'Null'].includes(base) && raw.length !== 1) throw new Error(`${base} requires a single Boolean value.`);
       if (!raw.length || !raw.every(value => typeof value === 'string' || ((base === 'Bool' || base === 'Null') && typeof value === 'boolean') || ((base.startsWith('Numeric') || base.startsWith('Date')) && typeof value === 'number' && Number.isFinite(value)))) throw new Error(`${operator} requires string values (Bool and Null also accept booleans).`);
       const literals = raw.map(String);
       const supportsVariables = base.startsWith('String') || base.startsWith('Arn');
@@ -275,7 +275,7 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
   const statements = await Promise.all(raw.map(async (value: unknown, index: number): Promise<StatementResult> => {
     const statement = object(value, `Statement ${index + 1}`);
     for (const key of Object.keys(statement)) if (!['Sid','Effect','Action','NotAction','Resource','NotResource','Condition'].includes(key)) throw new Error(`Unsupported statement field: ${key}. Only identity policies are supported.`);
-    if (!['Allow','Deny'].includes(String(statement.Effect))) throw new Error('Statement Effect must be Allow or Deny.');
+    if (typeof statement.Effect !== 'string' || !['Allow','Deny'].includes(statement.Effect)) throw new Error('Statement Effect must be Allow or Deny.');
     if (statement.Sid !== undefined && typeof statement.Sid !== 'string') throw new Error('Statement Sid must be a string.');
     if ((statement.Resource === undefined) === (statement.NotResource === undefined)) throw new Error('Statement requires exactly one of Resource or NotResource.');
     if ((statement.Action === undefined) === (statement.NotAction === undefined)) throw new Error('Statement requires exactly one of Action or NotAction.');

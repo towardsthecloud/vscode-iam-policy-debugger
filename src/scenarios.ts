@@ -1,13 +1,20 @@
 import * as path from 'node:path';
+import {realpath} from 'node:fs/promises';
 import * as vscode from 'vscode';
 import {parseSuite, type ScenarioSuite} from './suite';
 
-export function policyUriFor(suiteUri: vscode.Uri, relativePolicy: string): vscode.Uri {
+export async function policyUriFor(suiteUri: vscode.Uri, relativePolicy: string): Promise<vscode.Uri> {
   const folder = vscode.workspace.getWorkspaceFolder(suiteUri);
   if (!folder || suiteUri.scheme !== 'file') throw new Error('Open the scenario file inside a local workspace folder.');
   const uri = vscode.Uri.joinPath(suiteUri, '..', relativePolicy);
-  const relative = path.relative(folder.uri.fsPath, uri.fsPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Scenario policy must stay inside its workspace folder.');
+  const inside = (root: string, target: string): void => {
+    const relative = path.relative(root, target);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Scenario policy must stay inside its workspace folder.');
+  };
+  inside(folder.uri.fsPath, uri.fsPath);
+  const [root, suite, policy] = await Promise.all([realpath(folder.uri.fsPath), realpath(suiteUri.fsPath), realpath(uri.fsPath)]);
+  inside(root, suite);
+  inside(root, policy);
   return uri;
 }
 

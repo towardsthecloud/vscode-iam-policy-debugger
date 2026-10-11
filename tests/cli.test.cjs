@@ -5,6 +5,7 @@ const {spawnSync} = require('node:child_process');
 const test = require('node:test');
 
 test('packaged CLI runs saved template scenarios and reports failures safely for CI', () => {
+  fs.mkdirSync('.vscode-test/results', {recursive: true});
   const root = fs.mkdtempSync(path.resolve('.vscode-test/cli-'));
   fs.cpSync('tests/fixtures', root, {recursive: true});
   const file = path.join(root, 'template.iam-tests.json');
@@ -33,6 +34,24 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
   save({...scenario, policy: 'policies.tf', policyId: 'data.aws_iam_policy_document.delete', templateValues: {}, expected: 'ExplicitlyDenied', request: {...scenario.request, action: 's3:DeleteObject', context: {'aws:SourceIp':'192.0.2.1'}}});
   result = run([file]);
   assert.equal(result.status, 0, result.stdout);
+  const terraformFile = path.join(root, 'policies.tf');
+  const terraformText = fs.readFileSync(terraformFile, 'utf8');
+  for (const marker of ['$${unclosed', '%%{unclosed']) {
+    fs.writeFileSync(terraformFile, `locals { marker = "${marker}" }\n${terraformText}`);
+    result = run([file]);
+    assert.equal(result.status, 0, 'escaped template markers cannot hide following policy blocks: ' + result.stdout);
+  }
+  fs.writeFileSync(terraformFile, terraformText);
+  const invalidPolicy = path.join(root, 'invalid-policy.json');
+  fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: ['Allow'], Action: 's3:GetObject', Resource: '*'}}));
+  save({...scenario, policy: 'invalid-policy.json', policyId: undefined, templateValues: undefined});
+  result = run([file]);
+  assert.equal(result.status, 2, 'array-valued Effect cannot produce a passing CI decision');
+  assert.match(JSON.parse(result.stdout).results[0].error, /Effect must be Allow or Deny/);
+  fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*', Condition: {Null: {'aws:TokenIssueTime': ['true', 'false']}}}}));
+  result = run([file]);
+  assert.equal(result.status, 2, 'multiple Null values must not create an unconditional Allow');
+  assert.match(JSON.parse(result.stdout).results[0].error, /Null requires a single/);
   fs.writeFileSync(file, '{"version":1,"tests":[]}');
   assert.equal(run([file]).status, 2, 'empty suites must not give a false green CI check');
   fs.writeFileSync('.vscode-test/results/cli.json', JSON.stringify({status: 'passed', checks: ['packaged CLI discovers suites, evaluates CloudFormation/Terraform, reports JSON, and returns 0/1/2 for pass/fail/error', 'unresolved references and paths outside root are errors', 'empty suites do not silently pass']}, null, 2));

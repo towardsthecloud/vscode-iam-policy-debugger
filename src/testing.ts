@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { readSuite, policyUriFor } from './scenarios';
 import {simulateDocument} from './policies';
+import type {ScenarioSuite} from './suite';
 
 export interface ScenarioOutcome { name: string; status: 'passed' | 'failed' | 'errored' | 'skipped'; actual?: string; error?: string }
 export class ScenarioTests implements vscode.Disposable {
@@ -37,42 +38,46 @@ export class ScenarioTests implements vscode.Disposable {
     for (const uri of uris) await this.discover(uri);
   }
 
-  private async discover(uri: vscode.Uri): Promise<vscode.TestItem> {
+  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
     const id = uri.toString();
     this.files.set(id, uri);
     const root = this.controller.items.get(id) ?? this.controller.createTestItem(id, vscode.workspace.asRelativePath(uri), uri);
     this.controller.items.add(root);
+    let items: vscode.TestItem[] = [];
     try {
-      const suite = await readSuite(uri);
+      const suite = snapshot ?? await readSuite(uri);
       root.error = undefined;
-      root.children.replace(suite.tests.map(scenario => {
+      items = suite.tests.map(scenario => {
         const item = this.controller.createTestItem(`${id}#${encodeURIComponent(scenario.name)}`, scenario.name, uri);
         item.description = scenario.expected;
         return item;
-      }));
+      });
+      root.children.replace(items);
     } catch (error) {
       root.children.replace([]);
       root.error = error instanceof Error ? error.message : String(error);
     }
-    return root;
+    return {root, items};
   }
 
   async runFile(uri: vscode.Uri, request?: vscode.TestRunRequest, token?: vscode.CancellationToken, existingRun?: vscode.TestRun): Promise<ScenarioOutcome[]> {
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before running IAM scenarios.');
     const suite = await readSuite(uri);
-    const root = await this.discover(uri);
+    // Discovery returns the items it created; concurrent runs can replace the
+    // live root before this await resumes without changing this snapshot.
+    const {root, items} = await this.discover(uri, suite);
     const run = existingRun ?? this.controller.createTestRun(new vscode.TestRunRequest([root]));
     const outcomes: ScenarioOutcome[] = [];
     const selected = (item: vscode.TestItem, list?: readonly vscode.TestItem[]): boolean => list?.some(candidate => candidate.id === item.id || candidate.id === root.id) ?? false;
     try {
-      for (const scenario of suite.tests) {
-        const item = root.children.get(`${uri.toString()}#${encodeURIComponent(scenario.name)}`)!;
+      for (const [index, scenario] of suite.tests.entries()) {
+        const item = items[index];
         if ((request?.include && !selected(item, request.include)) || selected(item, request?.exclude)) continue;
         if (token?.isCancellationRequested) { run.skipped(item); outcomes.push({name: scenario.name, status: 'skipped'}); continue; }
         run.started(item);
         const started = Date.now();
         try {
-          const policyUri = policyUriFor(uri, scenario.policy);
+          const policyUri = await policyUriFor(uri, scenario.policy);
           const policy = await vscode.workspace.openTextDocument(policyUri);
           const result = await simulateDocument(policy.getText(), policyUri.fsPath, scenario.request, {policyId: scenario.policyId, templateValues: scenario.templateValues});
           if (result.decision === scenario.expected) {

@@ -126,7 +126,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     if (sid && sid.type !== 'string') report(sid, 'INVALID_SID_TYPE', 'Sid must be a string.');
     const effect = field(statement, 'Effect');
     if (!effect) report(statement, 'MISSING_EFFECT', 'Statement requires Effect: Allow or Deny.');
-    else if (!['Allow', 'Deny'].includes(effect.value)) report(effect, 'INVALID_EFFECT', 'Effect must be Allow or Deny.');
+    else if (effect.type !== 'string' || (!effect.value.includes('${template:') && !['Allow', 'Deny'].includes(effect.value))) report(effect, 'INVALID_EFFECT', 'Effect must be Allow or Deny.');
     const pair = (positive: string, negative: string, required = true): Node | undefined => {
       const left = field(statement, positive), right = field(statement, negative);
       if (left && right) report(right, 'UNSUPPORTED_ELEMENT_COMBINATION', `Use ${positive} or ${negative}, never both.`);
@@ -145,7 +145,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
       }
     }
     const principal = pair('Principal', 'NotPrincipal', false);
-    if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny') report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
+    if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny' && !String(effect?.value).includes('${template:')) report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
     const trust = principal && actions.length > 0 && actions.every(node => /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity)$/i.test(node.value));
     const resource = pair('Resource', 'NotResource', !trust);
     const resources = strings(resource, 'Resource');
@@ -154,7 +154,13 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
       if (principal.type !== 'object') report(principal, 'INVALID_PRINCIPAL_TYPE', 'Principal must be "*" or an object with AWS, Service, Federated or CanonicalUser keys.');
       else {
         knownFields(principal, ['AWS', 'Service', 'Federated', 'CanonicalUser']);
-        for (const property of principal.children ?? []) strings(property.children![1], 'Principal');
+        for (const property of principal.children ?? []) {
+          const key = property.children![0].value;
+          for (const value of strings(property.children![1], 'Principal')) {
+            if (value.value.includes('${template:')) continue;
+            if (/[?*]/.test(value.value) && !(key === 'AWS' && value.value === '*')) report(value, 'INVALID_PRINCIPAL', 'Principal names and ARNs cannot contain partial wildcards. Use a specific principal or AWS: "*".');
+          }
+        }
       }
     }
     const condition = field(statement, 'Condition');
@@ -174,7 +180,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
             casing.set(key.value.toLowerCase(), key.value);
             const values = value.type === 'array' ? value.children ?? [] : [value];
             if (values.some(node => !['string', 'number', 'boolean'].includes(node.type))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers or booleans, or arrays of these values.');
-            if (match?.[2] === 'Bool' && values.length !== 1) report(value, 'INVALID_CONDITION_MULTIPLE_BOOLEAN', 'Bool requires a single Boolean value.');
+            if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.length !== 1) report(value, 'INVALID_CONDITION_MULTIPLE_BOOLEAN', `${match![2]} requires a single Boolean value.`);
             if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !String(node.value).includes('${template:') && !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');
           }
         }

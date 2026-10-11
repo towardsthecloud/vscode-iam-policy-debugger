@@ -4,26 +4,148 @@ import { templateValue } from './template-policies';
 import type { PolicySource, TemplateValues, SourceRange } from './policies';
 type Expression = TFExpressionSyntaxTree.ExpressionType;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const pointer = (path: (string | number)[]): string => JSON.stringify(path);
+const statementFields: Record<string, string> = {sid: 'Sid', effect: 'Effect', actions: 'Action', not_actions: 'NotAction', resources: 'Resource', not_resources: 'NotResource'};
+
+function expressionRange(node: Expression, expression: string, bytes: Buffer): SourceRange {
+  let start = bytes.subarray(0, node.range.start.byte).toString().length;
+  let end = bytes.subarray(0, node.range.end.byte).toString().length;
+  // HCL reports only the opening brace or first fragment for these nodes.
+  const raw = node.type === 'template' || node.type === 'object' ? node.meta.value : undefined;
+  const beginning = raw ? expression.lastIndexOf(raw, start) : -1;
+  if (raw && beginning >= 0 && beginning + raw.length >= end) {
+    const quoted = node.type === 'template' && raw.startsWith('"') && raw.endsWith('"');
+    start = beginning + (quoted ? 1 : 0);
+    end = beginning + raw.length - (quoted ? 1 : 0);
+  }
+  return {start, end};
+}
+
+type HclToken = {value: string; start: number; end: number};
+// Locate syntax without interpreting expressions; hcl2json remains the parser.
+function hclTokens(text: string): HclToken[] {
+  const ignoredEnd = (start: number): number | undefined => {
+    if (text[start] === '#' || text.startsWith('//', start)) return text.indexOf('\n', start) < 0 ? text.length : text.indexOf('\n', start);
+    if (text.startsWith('/*', start)) return text.indexOf('*/', start + 2) + 2;
+    const heredoc = /^<<(-?)([\w-]+)[\t ]*\r?\n/.exec(text.slice(start));
+    if (heredoc) {
+      const end = new RegExp(`^${heredoc[1] ? '[\\t ]*' : ''}${heredoc[2]}[\\t ]*\\r?$`, 'gm');
+      end.lastIndex = start + heredoc[0].length;
+      const match = end.exec(text);
+      return match ? match.index + match[0].length : text.length;
+    }
+    return undefined;
+  };
+  const quotedEnd = (start: number): number => {
+    for (let index = start + 1; index < text.length; index++) {
+      if (text[index] === '\\') { index++; continue; }
+      if ((text[index] === '$' || text[index] === '%') && text[index + 1] === text[index] && text[index + 2] === '{') { index += 2; continue; }
+      if ((text[index] === '$' || text[index] === '%') && text[index + 1] === '{') {
+        let depth = 1;
+        for (index += 2; index < text.length && depth; index++) {
+          const ignored = ignoredEnd(index);
+          if (ignored !== undefined) { index = ignored - 1; continue; }
+          if (text[index] === '"') { index = quotedEnd(index) - 1; continue; }
+          if (text[index] === '{') depth++;
+          if (text[index] === '}') depth--;
+        }
+        index--;
+      } else if (text[index] === '"') return index + 1;
+    }
+    return text.length;
+  };
+  const tokens: HclToken[] = [];
+  for (let start = 0; start < text.length;) {
+    if (/\s/.test(text[start])) { start++; continue; }
+    const ignored = ignoredEnd(start);
+    if (ignored !== undefined) { start = ignored; continue; }
+    const end = text[start] === '"' ? quotedEnd(start) : start + (/^[\w-]+/.exec(text.slice(start))?.[0].length ?? 1);
+    tokens.push({value: text.slice(start, end), start, end});
+    start = end;
+  }
+  return tokens;
+}
+
+async function policyDocumentRanges(text: string, tokens: HclToken[], block: Record<string, unknown>, filename: string): Promise<Map<string, SourceRange>> {
+  const start = tokens[0].start, end = tokens[tokens.length - 1].end;
+  const insertions = tokens.filter((token, index) => ['statement', 'condition'].includes(token.value) && tokens[index + 1]?.value === '{').map(token => token.end - start);
+  let expression = text.slice(start, end);
+  for (const offset of [...insertions].reverse()) expression = expression.slice(0, offset) + ' =' + expression.slice(offset);
+  const bytes = Buffer.from(expression);
+  const originalOffset = (offset: number): number => {
+    let removed = 0;
+    for (const insertion of insertions) {
+      if (offset < insertion + removed) break;
+      if (offset < insertion + removed + 2) return start + insertion;
+      removed += 2;
+    }
+    return start + offset - removed;
+  };
+  const rangeOf = (node: Expression): SourceRange => {
+    const range = expressionRange(node, expression, bytes);
+    return {start: originalOffset(range.start), end: originalOffset(range.end)};
+  };
+  const keyOf = (node: Expression): string => bytes.subarray(node.range.start.byte, node.range.end.byte).toString().trim();
+  const entries = (node: Expression): [Expression, Expression][] => node.children.flatMap((key, index) => index % 2 ? [] : [[key, node.children[index + 1]] as [Expression, Expression]]);
+  const ranges = new Map<string, SourceRange>([[pointer([]), {start, end}]]);
+  const locate = (node: Expression, path: (string | number)[]): void => {
+    ranges.set(pointer(path), rangeOf(node));
+    if (node.type === 'tuple') node.children.forEach((child, index) => locate(child, [...path, index]));
+  };
+  const ast = await getExpressionAst(filename, expression);
+  if (!ast || ast.type !== 'object') throw new Error('Could not locate Terraform policy-document fields.');
+  let statementIndex = 0;
+  for (const [key, value] of entries(ast)) {
+    const name = keyOf(key);
+    if (name === 'version' || name === 'policy_id') locate(value, [name === 'version' ? 'Version' : 'Id']);
+    if (name !== 'statement') continue;
+    const index = statementIndex++, path = ['Statement', index];
+    ranges.set(pointer(path), {start: rangeOf(key).start, end: rangeOf(value).end});
+    let conditionIndex = 0;
+    for (const [field, content] of entries(value)) {
+      const name = keyOf(field);
+      if (statementFields[name]) locate(content, [...path, statementFields[name]]);
+      if (name !== 'condition') continue;
+      const condition = object((object((block.statement as unknown[])[index]).condition as unknown[])?.[conditionIndex++]);
+      const conditionPath = [...path, 'Condition', String(condition.test)];
+      ranges.set(pointer([...path, 'Condition']), rangeOf(content));
+      ranges.set(pointer(conditionPath), rangeOf(content));
+      for (const [attribute, values] of entries(content)) if (keyOf(attribute) === 'values') locate(values, [...conditionPath, String(condition.variable)]);
+    }
+  }
+  return ranges;
+}
 
 export async function terraformPolicies(text: string, filename: string): Promise<PolicySource[]> {
   const document = object(await parse(filename, text));
+  const tokens = hclTokens(text);
   const sources: PolicySource[] = [];
   for (const kind of ['resource', 'data']) for (const [type, named] of Object.entries(object(document[kind]))) {
     if (!(kind === 'data' && type === 'aws_iam_policy_document') && !(kind === 'resource' && ['aws_iam_policy', 'aws_iam_role_policy', 'aws_iam_user_policy', 'aws_iam_group_policy', 'aws_iam_role'].includes(type))) continue;
     for (const [name, definitions] of Object.entries(object(named))) {
       if (!Array.isArray(definitions) || definitions.length !== 1) throw new Error(`Duplicate or malformed Terraform block: ${kind}.${type}.${name}`);
       const block = object(definitions[0]);
-      const pattern = new RegExp(`${kind}\\s+"${escape(type)}"\\s+"${escape(name)}"\\s*\\{`);
-      const start = pattern.exec(text)?.index ?? 0;
-      const range = {start, end: text.length};
+      const first = tokens.findIndex((token, index) => token.value === kind && tokens[index + 1]?.value === JSON.stringify(type) && tokens[index + 2]?.value === JSON.stringify(name) && tokens[index + 3]?.value === '{');
+      if (first < 0) throw new Error(`Could not locate Terraform block: ${kind}.${type}.${name}`);
+      let depth = 0, last = first + 3;
+      for (; last < tokens.length; last++) {
+        if (tokens[last].value === '{') depth++;
+        if (tokens[last].value === '}' && --depth === 0) break;
+      }
+      const range = {start: tokens[first].start, end: tokens[last].end};
       const base = `${kind}.${type}.${name}`;
       if (kind === 'data') sources.push({id: base, ...range, load: async (values, tolerant = false) => {
         const unresolved: string[] = [];
         for (const key of Object.keys(block)) if (!['statement', 'version', 'policy_id'].includes(key)) throw new Error(`Unsupported policy-document attribute: ${key}. Use a resolved policy document.`);
         const policy = await policyDocument(block, values, tolerant, unresolved, filename);
-        return {text: JSON.stringify(policy), rangeAt: () => range, unresolved};
+        const ranges = await policyDocumentRanges(text, tokens.slice(first + 3, last + 1), block, filename);
+        return {text: JSON.stringify(policy), rangeAt: path => {
+          for (let length = path.length; length >= 0; length--) {
+            const found = ranges.get(pointer(path.slice(0, length)));
+            if (found) return found;
+          }
+          return range;
+        }, unresolved};
       }});
       else {
         if (block.policy !== undefined) sources.push(policySource(block.policy, `${base}.policy`, range, text, filename));
@@ -47,18 +169,10 @@ function policySource(input: unknown, id: string, range: SourceRange, source: st
       const expression = input.slice(2, -1);
       const ast = await getExpressionAst(filename, expression);
       const offset = source.indexOf(expression, range.start);
+      const bytes = Buffer.from(expression);
       value = evaluate(ast, expression, values, tolerant, unresolved, [], (path, node) => {
         if (offset < 0 || ranges.has(pointer(path))) return;
-        const buffer = Buffer.from(expression);
-        let start = buffer.subarray(0, node.range.start.byte).toString().length;
-        let end = buffer.subarray(0, node.range.end.byte).toString().length;
-        // The parser reports only the first fragment's range for interpolated strings.
-        const raw = node.type === 'template' ? node.meta.value : undefined;
-        const beginning = raw ? expression.lastIndexOf(raw, start) : -1;
-        if (raw && beginning >= 0 && beginning + raw.length >= end) {
-          const quoted = raw.startsWith('"') && raw.endsWith('"');
-          start = beginning + (quoted ? 1 : 0); end = beginning + raw.length - (quoted ? 1 : 0);
-        }
+        const {start, end} = expressionRange(node, expression, bytes);
         ranges.set(pointer(path), {start: offset + start, end: offset + end});
       });
     } else value = input;
@@ -109,11 +223,10 @@ async function policyDocument(block: Record<string, unknown>, values: TemplateVa
   if (!Array.isArray(statements) || !statements.length) throw new Error('Terraform policy document requires statement blocks.');
   const policy: Record<string, unknown> = {Version: block.version ?? '2012-10-17', Statement: []};
   if (block.policy_id !== undefined) policy.Id = block.policy_id;
-  const fields: Record<string, string> = {sid: 'Sid', effect: 'Effect', actions: 'Action', not_actions: 'NotAction', resources: 'Resource', not_resources: 'NotResource'};
   for (const input of statements) {
     const statement = object(input), result: Record<string, unknown> = {Effect: statement.effect ?? 'Allow'};
     for (const [key, value] of Object.entries(statement)) {
-      if (fields[key]) result[fields[key]] = value;
+      if (statementFields[key]) result[statementFields[key]] = value;
       else if (key === 'condition') {
         if (!Array.isArray(value)) throw new Error('Terraform condition requires blocks.');
         const conditions: Record<string, Record<string, unknown>> = Object.create(null);

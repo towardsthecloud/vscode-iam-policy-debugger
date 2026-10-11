@@ -3,10 +3,11 @@ import { simulatePolicy } from './simulation';
 import { saveScenario } from './scenarios';
 import { ScenarioTests } from './testing';
 import { openDebugger } from './debugger';
+import { PolicyValidation } from './validation';
 
 export function activate(context: vscode.ExtensionContext): void {
   const tests = new ScenarioTests();
-  context.subscriptions.push(tests,
+  context.subscriptions.push(tests, new PolicyValidation(),
     vscode.commands.registerCommand('iamPolicyDebugger.debugPolicy', (uri?: vscode.Uri) => openDebugger(context, tests, uri)),
     vscode.commands.registerCommand('iamPolicyDebugger.simulate', async (uri: vscode.Uri, request: unknown) => {
       if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before debugging policies.');

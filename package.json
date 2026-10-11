@@ -1,7 +1,7 @@
 {
   "name": "iam-policy-debugger",
   "displayName": "AWS IAM Policy Debugger",
-  "description": "Debug AWS IAM access decisions and save policy regression scenarios in VS Code.",
+  "description": "Validate AWS IAM policies, debug access decisions and run regression scenarios in VS Code.",
   "author": "Danny Steenman",
   "version": "0.1.0",
   "publisher": "dannysteenman",
@@ -20,17 +20,20 @@
   },
   "categories": [
     "Other",
-    "Testing"
+    "Testing",
+    "Linters"
   ],
   "keywords": [
     "aws",
     "iam",
     "policy",
     "debugger",
+    "validator",
     "testing",
     "security"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "workspaceContains:**/*.iam-tests.json"
   ],
   "main": "./out/extension.js",

@@ -1,16 +1,55 @@
 # AWS IAM Policy Debugger
 
-Debug a request against an IAM identity policy and keep its expected outcome as a regression test in VS Code. Everything runs locally. No AWS credentials are required.
+**Unpublished development preview.** This extension is not available in the VS Code Marketplace. Build a local VSIX from this checkout to try it.
 
+Validate IAM JSON while you edit, explain an identity-policy access decision, and keep the expected outcome as a regression test. Everything runs locally in VS Code. No AWS credentials are required.
+
+- Catch policy errors and security warnings as editor squiggles and Problems entries.
 - See why each statement matched or failed: action, resource, and individual conditions.
 - Jump from the explanation to the statement in your editor.
 - Save a named scenario and choose its expected outcome.
 - Discover and run `*.iam-tests.json` files in the Testing panel.
 - Test current editor contents, including unsaved policy changes.
 
-## Try it
+## See it in action
 
-This extension is a preview and has not been published to the Marketplace. Download/build the VSIX, then use **Extensions: Install from VSIX**. VS Code 1.85 or newer is required.
+These are real captures of the packaged preview in an isolated VS Code profile, using disposable example policies and a fictional AWS account.
+
+### Validate as you edit
+
+Spot broad permissions and `iam:PassRole` on every role, with findings located on the values you need to review.
+
+![IAM policy warnings underlined in the editor and listed in Problems](docs/images/policy-validation.png)
+
+### Explain an access decision
+
+Inspect each statement's action, resource and condition matches beside the policy. Save the request and its expected decision as a named scenario.
+
+![IAM debugger explains matching statements beside the policy](docs/images/policy-debugger.png)
+
+### Run policy regression tests
+
+Saved scenarios appear in VS Code's Testing panel. They use current editor contents, so you can test a policy change before saving it.
+
+![Saved IAM scenarios running in the Testing panel](docs/images/policy-scenarios.png)
+
+### Short demo
+
+Scope broad permissions to clear the warnings, simulate a read over TLS, then remove TLS and see the explicit Deny match.
+
+![Demo of repairing policy findings and testing TLS access](docs/images/policy-demo.gif)
+
+## Build and try the preview
+
+Use Node.js 24 and VS Code 1.85 or newer. From this checkout:
+
+```sh
+fnm use
+npm ci
+npm run package
+```
+
+Run **Extensions: Install from VSIX** in VS Code and select `.vscode-test/iam-policy-debugger.vsix`. You can also press F5 after `npm run compile` to open an Extension Development Host with the examples workspace.
 
 1. Open a trusted local workspace containing a standalone identity-policy JSON file. The [examples](examples/) include an uploads policy and 2 scenarios.
 2. Open the policy and run **IAM: Debug Access for Current Policy** from the Command Palette. It is also available in the editor toolbar and Explorer context menu.
@@ -21,6 +60,14 @@ This extension is a preview and has not been published to the Marketplace. Downl
 
 The policy must be saved before you save a scenario. Saves to the same scenario file are serialized within an extension host. Existing scenarios are preserved; duplicate names and dirty scenario files produce errors. Changing the request or policy clears the debugger result until you simulate again.
 
+## Policy validation
+
+Open a standalone JSON policy. Documents with a top-level `Statement` or an IAM language `Version` are recognized automatically. Findings update with unsaved edits; ordinary project JSON and `*.iam-tests.json` suites are excluded. Open documents are checked after activation, including policies opened later in the session.
+
+Errors cover strict JSON syntax, duplicate JSON keys, required statement elements, conflicting element pairs, effects, versions, data types, ARN shape, concrete action names in the bundled catalog, condition structure, invalid condition operators, multiple Bool values, and condition keys with conflicting capitalization. Warnings cover missing versions, wildcard actions/resources, public principals, broad `iam:PassRole`, and Allow statements using `NotAction` or `NotResource`.
+
+Validation accepts resource policies, role trust-policy structure, policy variables, and standard condition operators such as Numeric, Date and IP. The debugger supports the smaller identity-policy subset below. These are local structural and best-practice checks inspired by the [web policy validator](https://towardsthecloud.com/tools/aws-iam-policy-validator). They do not call AWS Access Analyzer or implement all its service-specific checks. A clean Problems view does not prove deployment validity or least privilege.
+
 ## What a decision means
 
 **Allowed by this policy** means an Allow statement matched and no Deny statement matched within this one policy. **Explicitly denied** means a Deny statement matched. **Implicitly denied** means no Allow statement matched.
@@ -29,17 +76,17 @@ This is a policy-matching tool, not an effective-permissions calculation or a li
 
 ## Supported policy features
 
-| Feature | Support |
-| --- | --- |
-| Identity-policy JSON | Single statement or array; strict JSON without comments |
-| Allow / Deny | Explicit Deny takes precedence |
-| Action / NotAction | String or array; `*` and `?`; case-insensitive |
-| Resource / NotResource | String or array; `*` and `?`; case-sensitive |
-| String conditions | Equals, NotEquals, EqualsIgnoreCase, NotEqualsIgnoreCase, Like, NotLike |
-| ARN conditions | Equals, Like, NotEquals, NotLike; component-wise wildcards |
-| Boolean / existence | Bool and Null |
-| Optional keys | IfExists for supported operators except Null |
-| Multivalue context | ForAnyValue and ForAllValues for String and ARN operators |
+| Feature                | Support                                                                 |
+| ---------------------- | ----------------------------------------------------------------------- |
+| Identity-policy JSON   | Single statement or array; strict JSON without comments                 |
+| Allow / Deny           | Explicit Deny takes precedence                                          |
+| Action / NotAction     | String or array; `*` and `?`; case-insensitive                          |
+| Resource / NotResource | String or array; `*` and `?`; case-sensitive                            |
+| String conditions      | Equals, NotEquals, EqualsIgnoreCase, NotEqualsIgnoreCase, Like, NotLike |
+| ARN conditions         | Equals, Like, NotEquals, NotLike; component-wise wildcards              |
+| Boolean / existence    | Bool and Null                                                           |
+| Optional keys          | IfExists for supported operators except Null                            |
+| Multivalue context     | ForAnyValue and ForAllValues for String and ARN operators               |
 
 Conditions across keys/operators use AND. Positive policy values use OR; negated values use NOR. Missing-key and empty-set behavior follows the supported AWS condition operators. Unqualified operators require a single request value; use a set operator for arrays containing multiple values. Combining set qualifiers with IfExists is not supported.
 
@@ -88,7 +135,7 @@ npm run package
 
 Press F5 to launch an Extension Development Host with the examples workspace. Packaging writes `.vscode-test/iam-policy-debugger.vsix`. Integration tests unpack and execute that VSIX in an isolated VS Code profile. On Linux, run `xvfb-run -a npm test`. Reports are saved under `.vscode-test/results/`. CI tests the minimum and stable VS Code releases and produces a VSIX artifact without publishing it.
 
-For interactive UI validation, run `IAM_UI_TEST=1 npm run test:integration -- stable`, attach `playwright-cli -s=iam attach --cdp=http://127.0.0.1:9241`, and run `playwright-cli -s=iam run-code --filename=tests/playwright-ui.cjs`. The test host waits up to 5 minutes; finish with `curl http://127.0.0.1:9242`. The UI script exercises simulation, saving, invalidation, navigation, and a narrow panel. Its screenshot and trace stay in `.vscode-test/results/`.
+For interactive UI validation, run `IAM_UI_TEST=1 npm run test:integration -- stable`, attach `playwright-cli -s=iam attach --cdp=http://127.0.0.1:9241`, and run `playwright-cli -s=iam run-code --filename=tests/playwright-ui.cjs`. The test host waits up to 10 minutes; finish with `curl http://127.0.0.1:9242`. The UI script exercises simulation, saving, invalidation, navigation, and a narrow panel. Its screenshot and trace stay in `.vscode-test/results/`. See [capture instructions](docs/images/README.md) for the README screenshots and demo.
 
 ## License
 

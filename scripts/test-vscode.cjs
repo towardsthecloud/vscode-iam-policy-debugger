@@ -10,6 +10,15 @@ const {execFileSync} = require('node:child_process');
   const packaged = path.join(run, 'packaged');
   const workspace = path.join(run, 'workspace');
   await fs.mkdir(packaged); await fs.mkdir(workspace);
+  if (process.env.IAM_UI_TEST === '1') {
+    await fs.mkdir(path.join(run, 'profile', 'User'), {recursive: true});
+    await fs.writeFile(path.join(run, 'profile', 'User', 'settings.json'), JSON.stringify({
+      'editor.fontSize': 16, 'editor.minimap.enabled': false, 'editor.wordWrap': 'on',
+      'workbench.colorTheme': 'Default Dark Modern', 'workbench.startupEditor': 'none',
+      'workbench.editor.enablePreview': false, 'workbench.tips.enabled': false,
+      'window.title': 'IAM Policy Playground', 'window.commandCenter': false,
+    }));
+  }
   await fs.cp('tests/fixtures', workspace, {recursive: true});
   execFileSync('unzip', ['-q', path.resolve('.vscode-test/iam-policy-debugger.vsix'), '-d', packaged]);
   await runTests({

@@ -9,7 +9,11 @@ exports.run = async function () {
   try {
     const extension = vscode.extensions.getExtension('dannysteenman.iam-policy-debugger');
     assert.ok(extension, 'Packaged extension is installed');
-    await extension.activate();
+    // No scenario exists at startup: discovery must activate without a command.
+    const startupDeadline = Date.now() + 10000;
+    while (!extension.isActive && Date.now() < startupDeadline) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(extension.isActive, 'Scenario discovery activates in an initially empty workspace');
+    checks.push('activate after startup without an existing scenario or explicit IAM command');
     const policyUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'policy.json'));
     const request = {
       principal: 'arn:aws:iam::123456789012:role/Application',
@@ -49,6 +53,7 @@ exports.run = async function () {
     }
     for (const [condition, context, expected] of [
       [{StringEquals: {'aws:PrincipalOrgID': ['o-trusted','o-other']}}, {'aws:principalorgid': 'o-trusted'}, 'Allowed'],
+      [{StringEquals: {'aws:SourceVpc': 'vpc-one'}, StringNotEquals: {'aws:SourceVpc': 'vpc-two'}}, {'aws:SourceVpc': 'vpc-one'}, 'Allowed'],
       [{StringEquals: {'aws:PrincipalOrgID': 'o-trusted'}}, {}, 'ImplicitlyDenied'],
       [{StringNotEquals: {'aws:PrincipalOrgID': ['o-trusted','o-other']}}, {'aws:PrincipalOrgID': 'o-other'}, 'ImplicitlyDenied'],
       [{StringNotEquals: {'aws:PrincipalOrgID': 'o-trusted'}}, {}, 'Allowed'],
@@ -84,6 +89,8 @@ exports.run = async function () {
     assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, request)).decision, 'Allowed');
     assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request, resource: 'arn:aws:s3:::example-uploads/private/key'})).decision, 'ImplicitlyDenied');
     for (const [value, error] of [
+      [{Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*', Condition: {Bool: {'aws:SecureTransport': ['true', 'false']}}}}, /Bool requires a single/],
+      [{Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*', Condition: {StringEquals: {'aws:SourceVpc': 'vpc-one'}, StringNotEquals: {'AWS:SOURCEVPC': 'vpc-two'}}}}, /Duplicate condition key/i],
       [{Statement: [{Effect: 'Allow', Action: '*', Resource: '*'}, {Effect: 'Deny', Action: 'ec2:*', Resource: '*', Condition: {IpAddress: {'aws:SourceIp': '10.0.0.0/8'}}}]}, /Unsupported condition operator/],
       [{Statement: {Effect: 'Allow', Principal: '*', Action: '*', Resource: '*'}}, /Unsupported statement field/],
       [{Statement: {Effect: 'Allow', Action: '*', Resource: 'arn:aws:s3:::example-uploads/${aws:username}/*'}}, /Policy variables/],
@@ -144,20 +151,108 @@ exports.run = async function () {
     const concurrent = JSON.parse(await fs.readFile(scenarioFile.fsPath, 'utf8'));
     assert.deepEqual(concurrent.tests.map(test => test.name).sort(), ['Read uploads', 'Concurrent short', 'Concurrent longer name that must preserve the first scenario'].sort());
     checks.push('concurrent saves preserve both scenarios and valid persisted JSON');
-
-
-
-
+    const validationUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'validation.json'));
+    await vscode.workspace.fs.writeFile(validationUri, Buffer.from(JSON.stringify({Version: '2012-10-17', Statement: {Effect: 'Permit', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'}}, null, 2)));
+    const validationDocument = await vscode.workspace.openTextDocument(validationUri);
+    await vscode.window.showTextDocument(validationDocument);
+    async function waitDiagnostics(predicate) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const findings = vscode.languages.getDiagnostics(validationUri).filter(item => item.source === 'IAM Policy');
+        if (predicate(findings)) return findings;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      throw new Error('IAM diagnostics did not reach the expected state');
+    }
+    const invalidEffect = (await waitDiagnostics(items => items.some(item => item.code === 'INVALID_EFFECT'))).find(item => item.code === 'INVALID_EFFECT');
+    assert.equal(invalidEffect.severity, vscode.DiagnosticSeverity.Error);
+    assert.equal(validationDocument.getText(invalidEffect.range), '"Permit"');
+    const repair = new vscode.WorkspaceEdit();
+    repair.replace(validationUri, invalidEffect.range, '"Allow"');
+    await vscode.workspace.applyEdit(repair);
+    await waitDiagnostics(items => items.length === 0);
+    checks.push('live IAM errors underline the offending value and clear after an unsaved repair');
+    async function editValidation(value) {
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(validationUri, new vscode.Range(validationDocument.positionAt(0), validationDocument.positionAt(validationDocument.getText().length)), typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+      await vscode.workspace.applyEdit(edit);
+    }
+    await editValidation({Version: '2012-10-17', Statement: [
+      {Sid: 'ReadExampleBucket', Effect: 'Allow', Action: ['s3:GetObject', 's3:ListBucket'], Resource: '*'},
+      {Sid: 'PassAnyRole', Effect: 'Allow', Action: 'iam:PassRole', Resource: '*'}
+    ]});
+    const broad = await waitDiagnostics(items => items.length === 3 && items.some(item => item.code === 'PASS_ROLE_WILDCARD_RESOURCE'));
+    assert.deepEqual(broad.map(item => item.code).sort(), ['BROAD_RESOURCE', 'BROAD_RESOURCE', 'PASS_ROLE_WILDCARD_RESOURCE']);
+    for (const item of broad) {
+      assert.equal(item.severity, vscode.DiagnosticSeverity.Warning);
+      assert.equal(validationDocument.getText(item.range), '"*"');
+    }
+    checks.push('the website validator example produces two wildcard-resource warnings and an actionable PassRole warning');
+    for (const [value, code, underlined] of [
+      [{Version: '2012-10-17'}, 'MISSING_STATEMENT'],
+      [{Statement: []}, 'MISSING_STATEMENT'],
+      [{Statement: {Action: 's3:GetObject', Resource: '*'}}, 'MISSING_EFFECT'],
+      [{Statement: {Effect: 'Allow', Action: 42, Resource: '*'}}, 'INVALID_ACTION_TYPE', '42'],
+      [{Statement: {Effect: 'Allow', Action: 's3:MadeUpAction', Resource: '*'}}, 'INVALID_ACTION', '"s3:MadeUpAction"'],
+      [{Statement: {Effect: 'Allow', Action: '*', NotAction: '*', Resource: '*'}}, 'UNSUPPORTED_ELEMENT_COMBINATION'],
+      [{Statement: {Effect: 'Allow', Action: '*', Resource: 42}}, 'INVALID_RESOURCE_TYPE', '42'],
+      [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {Bool: {'aws:SecureTransport': ['true','false']}}}}, 'INVALID_CONDITION_MULTIPLE_BOOLEAN'],
+      [{Statement: {Effect: 'Allow', Action: '*', Resource: '*', Condition: {StringEquals: {'aws:SourceVpc': 'vpc-one', 'AWS:SOURCEVPC': 'vpc-two'}}}}, 'DUPLICATE_KEYS_WITH_DIFFERENT_CASE'],
+      ['{"Statement":{"Effect":"Allow","Effect":"Deny","Action":"*","Resource":"*"}}', 'DUPLICATE_JSON_KEY', '"Effect"'],
+      ['{"Statement": [', 'JSON_SYNTAX_ERROR']
+    ]) {
+      await editValidation(value);
+      const findings = await waitDiagnostics(items => items.some(item => item.code === code));
+      const item = findings.find(item => item.code === code);
+      assert.equal(item.severity, vscode.DiagnosticSeverity.Error, code);
+      if (underlined) assert.equal(validationDocument.getText(item.range), underlined, code);
+    }
+    await editValidation({Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {AWS: 'arn:aws:iam::123456789012:root'}, Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/${aws:username}/*', Condition: {NumericLessThan: {'s3:max-keys': 10}, IpAddress: {'aws:SourceIp': '10.0.0.0/8'}}}});
+    await waitDiagnostics(items => items.length === 0);
+    checks.push('structural, JSON, catalog and condition findings have precise ranges; valid resource policies, variables and non-simulator conditions are accepted');
+    for (const [statement, expectedCodes] of [
+      [{Effect: 'Allow', Action: 's3:*', Resource: 'arn:aws:s3:::example-uploads/*'}, ['BROAD_ACTION']],
+      [{Effect: 'Allow', NotAction: 's3:DeleteObject', Resource: 'arn:aws:s3:::example-uploads/*'}, ['ALLOW_WITH_NOT_ACTION']],
+      [{Effect: 'Allow', NotAction: 'iam:PassRole', Resource: '*'}, ['ALLOW_WITH_NOT_ACTION', 'BROAD_RESOURCE']],
+      [{Effect: 'Allow', Action: 's3:GetObject', NotResource: 'arn:aws:s3:::example-uploads/private/*'}, ['ALLOW_WITH_NOT_RESOURCE']],
+      [{Effect: 'Allow', Principal: {AWS: ['*']}, Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'}, ['PUBLIC_PRINCIPAL', 'PUBLIC_PRINCIPAL_WITHOUT_CONDITION']],
+      [{Effect: 'Allow', Principal: '*', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*', Condition: {StringEquals: {'aws:PrincipalOrgID': 'o-trusted'}}}, ['PUBLIC_PRINCIPAL']],
+      [{Effect: 'Deny', NotAction: 's3:DeleteObject', Resource: '*'}, []]
+    ]) {
+      await editValidation({Version: '2012-10-17', Statement: statement});
+      const findings = await waitDiagnostics(items => JSON.stringify(items.map(item => item.code).sort()) === JSON.stringify([...expectedCodes].sort()));
+      for (const item of findings) assert.equal(item.severity, vscode.DiagnosticSeverity.Warning);
+    }
+    checks.push('broad Allow, public principals and complement warnings match the website rules without warning on equivalent Deny statements');
+    await editValidation({name: 'Ordinary project settings', StatementNested: {Effect: 'Permit'}});
+    await waitDiagnostics(items => items.length === 0);
+    await editValidation('{"Statement": }');
+    await waitDiagnostics(items => items.some(item => item.code === 'JSON_SYNTAX_ERROR'));
+    await editValidation({Version: '2012-10-17', Statement: {Effect: 'Permit', Action: 's3:GetObject', Resource: '*'}});
+    await waitDiagnostics(items => items.some(item => item.code === 'INVALID_EFFECT'));
+    await validationDocument.save();
+    await vscode.languages.setTextDocumentLanguage(validationDocument, 'plaintext');
+    await waitDiagnostics(items => items.length === 0);
+    assert.ok(!vscode.languages.getDiagnostics(scenarioFile).some(item => item.source === 'IAM Policy'));
+    checks.push('ordinary JSON and scenario files are excluded; changing language clears policy diagnostics');
     if (process.env.IAM_UI_TEST === '1') {
-      await setPolicy(policy);
+      await setPolicy(JSON.stringify(policy, null, 2));
       await conditionalDocument.save();
+      await vscode.workspace.fs.delete(scenarioFile);
+      const showcaseUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'pass-role.json'));
+      await vscode.workspace.fs.writeFile(showcaseUri, Buffer.from(JSON.stringify({Version: '2012-10-17', Statement: [
+        {Sid: 'ReadUploads', Effect: 'Allow', Action: 's3:GetObject', Resource: '*'},
+        {Sid: 'PassDeploymentRole', Effect: 'Allow', Action: 'iam:PassRole', Resource: '*'}
+      ]}, null, 2)));
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      await vscode.window.showTextDocument(conditionalDocument, vscode.ViewColumn.One);
       await vscode.commands.executeCommand('iamPolicyDebugger.debugPolicy', conditionalUri);
       console.log('IAM_UI_READY');
       await new Promise((resolve, reject) => {
         const server = require('node:http').createServer((req, res) => {
           res.end('done'); clearTimeout(timeout); server.close(); resolve();
         });
-        const timeout = setTimeout(() => {server.close(); reject(new Error('UI validation timed out'));}, 300000);
+        const timeout = setTimeout(() => {server.close(); reject(new Error('UI validation timed out'));}, 600000);
         server.listen(9242, '127.0.0.1');
       });
     }

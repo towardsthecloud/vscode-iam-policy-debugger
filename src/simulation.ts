@@ -113,6 +113,7 @@ function conditionsFor(value: unknown, context: AccessRequest['context']): State
   const conditions = object(value, 'Condition');
   if (!Object.keys(conditions).length) throw new Error('Condition cannot be empty.');
   const result: StatementResult['conditions'] = [];
+  const keyNames = new Map<string, string>();
   for (const [operator, entries] of Object.entries(conditions)) {
     const match = /^(?:(ForAllValues|ForAnyValue):)?(StringEquals|StringNotEquals|StringEqualsIgnoreCase|StringNotEqualsIgnoreCase|StringLike|StringNotLike|ArnEquals|ArnLike|ArnNotEquals|ArnNotLike|Bool|Null)(IfExists)?$/.exec(operator);
     if (!match) throw new Error(`Unsupported condition operator: ${operator}`);
@@ -123,7 +124,11 @@ function conditionsFor(value: unknown, context: AccessRequest['context']): State
     if (!Object.keys(keys).length) throw new Error('Condition operator cannot be empty.');
     for (const [key, expected] of Object.entries(keys)) {
       if (!key || key.includes('${')) throw new Error('Condition keys must be literal nonempty strings.');
+      const previous = keyNames.get(key.toLowerCase());
+      if (previous !== undefined && previous !== key) throw new Error(`Duplicate condition key with different casing: ${key}`);
+      keyNames.set(key.toLowerCase(), key);
       const raw = Array.isArray(expected) ? expected : [expected];
+      if (base === 'Bool' && raw.length !== 1) throw new Error('Bool requires a single Boolean value.');
       if (!raw.length || !raw.every(value => typeof value === 'string' || ((base === 'Bool' || base === 'Null') && typeof value === 'boolean'))) throw new Error(`${operator} requires string values (Bool and Null also accept booleans).`);
       const values = raw.map(String);
       if (values.some(value => value.includes('${'))) throw new Error('Policy variables are not supported in this release.');

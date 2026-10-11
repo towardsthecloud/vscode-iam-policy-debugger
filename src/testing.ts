@@ -8,6 +8,7 @@ export class ScenarioTests implements vscode.Disposable {
   private readonly controller = vscode.tests.createTestController('iamPolicyDebugger', 'IAM Policy Scenarios');
   private readonly disposables: vscode.Disposable[] = [this.controller];
   private readonly files = new Map<string, vscode.Uri>();
+  private readonly revisions = new WeakMap<vscode.TestItem, number>();
 
   constructor() {
     this.controller.createRunProfile('Run IAM scenarios', vscode.TestRunProfileKind.Run, async (request, token) => {
@@ -46,6 +47,8 @@ export class ScenarioTests implements vscode.Disposable {
     return root;
   }
 
+  private revision(root: vscode.TestItem): number { return this.revisions.get(root) ?? 0; }
+
   private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
     const root = this.rootFor(uri);
     const id = uri.toString();
@@ -59,9 +62,11 @@ export class ScenarioTests implements vscode.Disposable {
         return item;
       });
       root.children.replace(items);
+      this.revisions.set(root, this.revision(root) + 1);
     } catch (error) {
       root.children.replace([]);
       root.error = error instanceof Error ? error.message : String(error);
+      this.revisions.set(root, this.revision(root) + 1);
     }
     return {root, items};
   }
@@ -75,12 +80,16 @@ export class ScenarioTests implements vscode.Disposable {
     try {
       if (selected(root, request?.exclude)) return outcomes;
       let suite: ScenarioSuite;
+      const revision = this.revision(root);
       try {
         suite = await readSuite(uri);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        root.children.replace([]);
-        root.error = message;
+        if (this.revision(root) === revision) {
+          root.children.replace([]);
+          root.error = message;
+          this.revisions.set(root, revision + 1);
+        }
         run.errored(root, new vscode.TestMessage(message));
         outcomes.push({name: root.label, status: 'errored', error: message});
         return outcomes;

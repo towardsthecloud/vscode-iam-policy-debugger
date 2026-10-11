@@ -79,7 +79,7 @@ test('invalid suites become errored test roots without aborting profile runs', a
   }
   const disposable = () => ({dispose() {}});
   const runs = [];
-  let runProfile, listed = [], suiteReads = 0;
+  let runProfile, listed = [], suiteReads = 0, holdNextSuiteRead = false, signalSuiteRead, releaseSuiteRead;
   class TestRunRequest {
     constructor(include, exclude) { this.include = include; this.exclude = exclude; }
   }
@@ -111,7 +111,13 @@ test('invalid suites become errored test roots without aborting profile runs', a
       createFileSystemWatcher: () => ({...disposable(), onDidCreate: disposable, onDidChange: disposable, onDidDelete: disposable}),
       onDidChangeTextDocument: disposable, findFiles: async () => listed,
       async openTextDocument(value) {
-        if (value.fsPath.endsWith('.iam-tests.json')) suiteReads++;
+        if (value.fsPath.endsWith('.iam-tests.json')) {
+          suiteReads++;
+          if (holdNextSuiteRead && value.fsPath === invalidUri.fsPath) {
+            holdNextSuiteRead = false;
+            return new Promise(resolve => { releaseSuiteRead = resolve; signalSuiteRead(); });
+          }
+        }
         return {getText: () => fsSync.readFileSync(value.fsPath, 'utf8')};
       },
     },
@@ -148,6 +154,29 @@ test('invalid suites become errored test roots without aborting profile runs', a
     assert.equal(runs[2].ended, 1);
     assert.match(roots[0].error, /Invalid JSON/);
     assert.equal(roots[1].error, undefined);
+
+    const suiteReadStarted = new Promise(resolve => { signalSuiteRead = resolve; });
+    holdNextSuiteRead = true;
+    const olderRun = tests.runFile(invalidUri);
+    await suiteReadStarted;
+    await fs.writeFile(invalidUri.fsPath, JSON.stringify({version: 1, tests: [{
+      name: 'repaired scenario', policy: 'policy.json', expected: 'Allowed',
+      request: {principal: 'arn:aws:iam::123456789012:role/App', action: 's3:GetObject', resource: 'arn:aws:s3:::example/file', resourceAccountId: '123456789012', context: {}},
+    }]}));
+    await tests.refresh();
+    const repairedRoot = tests.controller.items.get(invalidUri.toString());
+    assert.deepEqual([...repairedRoot.children.values()].map(item => item.label), ['repaired scenario']);
+    assert.equal(repairedRoot.error, undefined);
+    releaseSuiteRead({getText: () => '{"version":'});
+    const olderOutcome = await olderRun;
+    assert.equal(olderOutcome.length, 1);
+    assert.equal(olderOutcome[0].name, 'invalid.iam-tests.json');
+    assert.equal(olderOutcome[0].status, 'errored');
+    assert.match(olderOutcome[0].error, /Invalid JSON/);
+    assert.deepEqual(runs[3].errored, [{id: invalidUri.toString(), message: olderOutcome[0].error}]);
+    assert.equal(runs[3].ended, 1);
+    assert.deepEqual([...repairedRoot.children.values()].map(item => item.label), ['repaired scenario']);
+    assert.equal(repairedRoot.error, undefined);
   } finally {
     tests.dispose();
     await fs.unlink(invalidUri.fsPath);

@@ -6,7 +6,7 @@
   "version": "0.1.0",
   "publisher": "dannysteenman",
   "homepage": "https://towardsthecloud.com",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/towardsthecloud/vscode-iam-policy-debugger.git"
@@ -37,9 +37,9 @@
   "scripts": {
     "compile": "tsc --noEmit && node scripts/build.cjs",
     "watch": "node scripts/build.cjs --watch",
-    "test": "npm run compile && node --test tests/*.test.cjs",
+    "test": "npm run test:integration",
     "test:integration": "npm run package && node scripts/test-vscode.cjs",
-    "package": "npm run compile && vsce package --no-dependencies --out .vscode-test/iam-policy-debugger.vsix",
+    "package": "vsce package --no-dependencies --out .vscode-test/iam-policy-debugger.vsix",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
@@ -55,6 +55,36 @@
       {
         "command": "iamPolicyDebugger.debugPolicy",
         "title": "IAM: Debug Access for Current Policy"
+      },
+      {
+        "command": "iamPolicyDebugger.runScenarios",
+        "title": "IAM: Run Scenarios in Current File"
+      },
+      {
+        "command": "iamPolicyDebugger.refreshTests",
+        "title": "IAM: Refresh Policy Scenarios"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "iamPolicyDebugger.debugPolicy",
+          "when": "resourceExtname == .json && resourceFilename !~ /\\.iam-tests\\.json$/",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "iamPolicyDebugger.debugPolicy",
+          "when": "resourceExtname == .json && resourceFilename !~ /\\.iam-tests\\.json$/",
+          "group": "iam"
+        }
+      ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": "*.iam-tests.json",
+        "url": "./schemas/iam-tests.schema.json"
       }
     ]
   },
@@ -69,6 +99,7 @@
     "virtualWorkspaces": false
   },
   "dependencies": {
-    "@actsecurity/iam-simulate": "0.1.184"
+    "@actsecurity/iam-data": "0.21.202610101",
+    "jsonc-parser": "3.3.1"
   }
 }

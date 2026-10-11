@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "Read uploads over TLS",
+      "policy": "uploads.json",
+      "expected": "Allowed",
+      "request": {
+        "principal": "arn:aws:iam::123456789012:role/Application",
+        "action": "s3:GetObject",
+        "resource": "arn:aws:s3:::example-uploads/photo.jpg",
+        "resourceAccountId": "123456789012",
+        "context": {
+          "aws:SecureTransport": "true"
+        }
+      }
+    },
+    {
+      "name": "Deny uploads without TLS",
+      "policy": "uploads.json",
+      "expected": "ExplicitlyDenied",
+      "request": {
+        "principal": "arn:aws:iam::123456789012:role/Application",
+        "action": "s3:GetObject",
+        "resource": "arn:aws:s3:::example-uploads/photo.jpg",
+        "resourceAccountId": "123456789012",
+        "context": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}

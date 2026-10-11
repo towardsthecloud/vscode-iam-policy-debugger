@@ -1,0 +1,51 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--vscode-foreground); background: var(--vscode-editor-background); font: var(--vscode-font-size)/1.55 var(--vscode-font-family); }
+main { max-width: 880px; margin: 0 auto; padding: 28px 28px 20px; }
+h1 { font-size: 28px; font-weight: 600; line-height: 1.2; margin: 2px 0 8px; }
+h2 { font-size: 19px; font-weight: 600; margin: 0 0 8px; }
+h3 { font-size: 15px; margin: 20px 0 10px; }
+h4 { margin: 0; font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+p { margin: 8px 0; }
+header > p:last-child, .hint, footer, #matched-count { color: var(--vscode-descriptionForeground); }
+.eyebrow { color: var(--vscode-textLink-foreground); font-size: 11px; font-weight: 600; letter-spacing: 1.5px; margin: 0; }
+.policy-name { display: inline-block; font: 12px var(--vscode-editor-font-family); padding: 3px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 3px; }
+.scope { border-left: 3px solid var(--vscode-textLink-foreground); background: var(--vscode-textBlockQuote-background); margin: 18px 0 24px; padding: 10px 14px; }
+summary { cursor: pointer; font-weight: 600; }
+.scope p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.wide { grid-column: 1 / -1; }
+label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; min-width: 0; }
+input, textarea, select { width: 100%; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 3px; padding: 9px 10px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); font: 12px/1.5 var(--vscode-editor-font-family); }
+textarea { resize: vertical; min-height: 90px; }
+select { font-family: var(--vscode-font-family); }
+input::placeholder { color: var(--vscode-input-placeholderForeground); }
+.hint { font-weight: 400; font-size: 11px; overflow-wrap: anywhere; }
+button { border: 1px solid transparent; border-radius: 3px; padding: 8px 14px; cursor: pointer; color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; font-weight: 500; }
+button:hover { background: var(--vscode-button-hoverBackground); }
+button:disabled { opacity: .6; cursor: default; }
+button:focus-visible, input:focus, textarea:focus, select:focus, summary:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+#simulate { margin-top: 20px; }
+.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); margin-top: 16px; }
+.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+#notice { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; font-size: 12px; margin: 14px 0; }
+.error { color: var(--vscode-errorForeground); }
+.warning { color: var(--vscode-editorWarning-foreground); }
+#result { margin-top: 24px; padding-top: 20px; border-top: 2px solid var(--vscode-editorWarning-foreground); }
+#result.allowed { border-color: var(--vscode-testing-iconPassed, #388a34); }
+.result-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+#matched-count { font-size: 11px; }
+.statement { border: 1px solid var(--vscode-widget-border); padding: 14px; border-radius: 4px; margin: 10px 0; }
+.statement-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.badge { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.matched, .pass { color: var(--vscode-testing-iconPassed, #388a34); }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 18px; list-style: none; margin: 12px 0; padding: 0; font-size: 11px; }
+.mismatch { color: var(--vscode-editorWarning-foreground); }
+.condition { font: 11px/1.5 var(--vscode-editor-font-family); overflow-wrap: anywhere; }
+.link { color: var(--vscode-textLink-foreground); background: transparent; border: 0; padding: 4px 0; font-size: 12px; }
+.link:hover { background: transparent; text-decoration: underline; }
+#save-section { margin: 26px 0; padding-top: 22px; border-top: 1px solid var(--vscode-widget-border); }
+#save-section > p { font-size: 12px; color: var(--vscode-descriptionForeground); margin-bottom: 16px; }
+footer { padding-top: 18px; font-size: 11px; border-top: 1px solid var(--vscode-widget-border); }
+[hidden] { display: none !important; }
+@media (max-width: 520px) { main { padding: 20px 16px; } .fields { grid-template-columns: 1fr; } h1 { font-size: 24px; } }

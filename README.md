@@ -14,12 +14,12 @@ This extension is a preview and has not been published to the Marketplace. Downl
 
 1. Open a trusted local workspace containing a standalone identity-policy JSON file. The [examples](examples/) include an uploads policy and 2 scenarios.
 2. Open the policy and run **IAM: Debug Access for Current Policy** from the Command Palette. It is also available in the editor toolbar and Explorer context menu.
-3. Enter a concrete IAM user/role ARN, action, resource ARN, and resource account ID. For the uploads example, use `s3:GetObject` and `arn:aws:s3:::example-uploads/photo.jpg` in account `123456789012`.
+3. Enter a concrete IAM user/role ARN, action, resource ARN, and resource account ID. Use `aws` as the account ID for an AWS-owned ARN such as `arn:aws:iam::aws:policy/AWSLambdaExecute`. For the uploads example, use `s3:GetObject` and `arn:aws:s3:::example-uploads/photo.jpg` in account `123456789012`.
 4. Supply request context explicitly, for example `{"aws:SecureTransport":"true"}`. Principal/account fields identify the scenario; they do **not** automatically populate condition keys such as `aws:PrincipalArn` or `aws:ResourceAccount`.
 5. Click **Simulate access**. Expand the scope description and inspect each statement. Click a statement’s **Open** button to select its source.
 6. Give the scenario a name and choose **Allowed**, **Explicitly denied**, or **Implicitly denied**. Save it, then run it in the Testing panel.
 
-The policy must be saved before you save a scenario. Existing scenarios are preserved; duplicate names and dirty scenario files produce errors. Changing the request or policy clears the debugger result until you simulate again.
+The policy must be saved before you save a scenario. Saves to the same scenario file are serialized within an extension host. Existing scenarios are preserved; duplicate names and dirty scenario files produce errors. Changing the request or policy clears the debugger result until you simulate again.
 
 ## What a decision means
 
@@ -69,7 +69,7 @@ Each scenario file contains `version: 1` and a `tests` array. The extension supp
 }
 ```
 
-Context values are strings or arrays of strings. Use `"true"` / `"false"` for request boolean values. Context key names are case-insensitive; ambiguous duplicates are rejected. Policy Bool/Null values may also be JSON booleans.
+Context values are strings or arrays of strings. Use `"true"` / `"false"` for request boolean values. Context key names are case-insensitive; ambiguous duplicates and explicit null context are rejected. Policy Bool/Null values may also be JSON booleans.
 
 Run all or selected scenarios from the Testing panel, or use **IAM: Run Scenarios in Current File**. Mismatches appear as failed tests; invalid or unsupported policy inputs appear as errors. The Testing panel output includes the evaluation scope.
 

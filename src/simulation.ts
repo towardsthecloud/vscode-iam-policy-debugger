@@ -58,19 +58,19 @@ export function validateRequest(input: unknown): AccessRequest {
   for (const key of ['principal', 'action', 'resource', 'resourceAccountId']) {
     if (typeof request[key] !== 'string' || !request[key]) throw new Error(`${key} is required.`);
   }
-  if (!/^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:(user|role)\/.+$/.test(request.principal as string)) {
+  if (!/^arn:(aws(?:-[a-z0-9]+)*):iam::\d{12}:(user|role)\/.+$/.test(request.principal as string)) {
     throw new Error('Principal must be an IAM user or role ARN. Session and anonymous principals are not supported in this release.');
   }
   if (!/^[a-z0-9-]+:[a-z0-9]+$/i.test(request.action as string)) throw new Error('Choose one concrete IAM action, such as s3:GetObject.');
-  if (!/^\d{12}$/.test(request.resourceAccountId as string)) throw new Error('Resource account ID must contain 12 digits.');
+  if (!/^(?:\d{12}|aws)$/.test(request.resourceAccountId as string)) throw new Error('Resource account ID must contain 12 digits, or aws for an AWS-owned resource.');
   if (request.resource !== '*' && (!(request.resource as string).startsWith('arn:') || /[?*]/.test(request.resource as string))) {
     throw new Error('Resource must be a concrete ARN, or * for an action that does not support resource-level permissions.');
   }
   const arnAccount = (request.resource as string).split(':')[4];
   if (arnAccount && arnAccount !== request.resourceAccountId) throw new Error('Resource account ID must match the account in the resource ARN.');
   if (/[?*]/.test(request.principal as string)) throw new Error('Principal must be a concrete ARN.');
-  if (request.resource !== '*' && !/^arn:(aws|aws-cn|aws-us-gov):[a-z0-9-]+:[^:]*:(?:[0-9]{12})?:.+$/.test(request.resource as string)) throw new Error('Resource must be a valid AWS resource ARN.');
-  const context = request.context ?? {};
+  if (request.resource !== '*' && !/^arn:(aws(?:-[a-z0-9]+)*):[a-z0-9-]+:[^:]*:(?:[0-9]{12}|aws)?:.+$/.test(request.resource as string)) throw new Error('Resource must be a valid AWS resource ARN.');
+  const context = request.context === undefined ? {} : request.context;
   if (!context || typeof context !== 'object' || Array.isArray(context)) throw new Error('Context must be a JSON object.');
   const contextKeys = new Set<string>();
   for (const [key, value] of Object.entries(context)) {

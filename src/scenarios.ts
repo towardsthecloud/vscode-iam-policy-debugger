@@ -43,13 +43,25 @@ export async function readSuite(uri: vscode.Uri): Promise<ScenarioSuite> {
   return parseSuite((await vscode.workspace.openTextDocument(uri)).getText());
 }
 
+const pendingSaves = new Map<string, Promise<vscode.Uri>>();
+
 export async function saveScenario(policyUri: vscode.Uri, input: unknown): Promise<vscode.Uri> {
+  const policyName = path.basename(policyUri.fsPath);
+  const suiteUri = vscode.Uri.joinPath(policyUri, '..', policyName.replace(/\.json$/i, '') + '.iam-tests.json');
+  const key = suiteUri.toString();
+  const previous = pendingSaves.get(key) ?? Promise.resolve();
+  const operation = previous.catch(() => undefined).then(() => appendScenario(policyUri, suiteUri, input));
+  pendingSaves.set(key, operation);
+  try { return await operation; }
+  finally { if (pendingSaves.get(key) === operation) pendingSaves.delete(key); }
+}
+
+async function appendScenario(policyUri: vscode.Uri, suiteUri: vscode.Uri, input: unknown): Promise<vscode.Uri> {
   if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before saving scenarios.');
   if (!vscode.workspace.getWorkspaceFolder(policyUri) || policyUri.scheme !== 'file') throw new Error('Open the policy inside a local workspace folder before saving a scenario.');
   const policyDocument = await vscode.workspace.openTextDocument(policyUri);
   if (policyDocument.isDirty) throw new Error('Save the policy file before saving a scenario.');
   const policyName = path.basename(policyUri.fsPath);
-  const suiteUri = vscode.Uri.joinPath(policyUri, '..', policyName.replace(/\.json$/i, '') + '.iam-tests.json');
   const candidate = input as Record<string, unknown>;
   const scenario = parseSuite(JSON.stringify({version: 1, tests: [{...candidate, policy: policyName}]})).tests[0];
   let suite: ScenarioSuite = {version: 1, tests: []};

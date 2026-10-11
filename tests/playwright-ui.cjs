@@ -61,6 +61,12 @@ async page => {
     await page.setViewportSize({width: 1920, height: 1100});
     await frame.waitForFunction(() => document.querySelector('iframe').contentDocument.documentElement.clientWidth > 520);
     await iframe.screenshot({path: '.vscode-test/results/debugger.png'});
+    await fill('#action', 'iam:GetPolicy');
+    await fill('#account', 'aws');
+    await fill('#resource', 'arn:aws:iam::aws:policy/AWSLambdaExecute');
+    await click('#simulate');
+    await waitText('#decision', 'Implicitly denied');
+    checks.push('the form accepts aws as the account for an AWS-owned resource');
     await fill('#context', '{bad'); await click('#simulate');
     await waitText('#notice', 'Request context must be valid JSON');
     checks.push('invalid JSON context produces a visible error');

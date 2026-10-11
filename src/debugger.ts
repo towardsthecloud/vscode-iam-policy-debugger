@@ -1,8 +1,7 @@
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
-import { simulatePolicy, simulationScope, parseJson, validateRequest, type AccessRequest, type AccessResult } from './simulation';
-import { saveScenario } from './scenarios';
+import { simulationScope, parseJson, validateRequest, type AccessRequest, type AccessResult } from './simulation';
 import type { ScenarioTests } from './testing';
 
 export async function openDebugger(context: vscode.ExtensionContext, tests: ScenarioTests, suppliedUri?: vscode.Uri): Promise<void> {
@@ -33,7 +32,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
           const request = validateRequest(typeof input.contextJson === 'string'
             ? {...input.request as Record<string, unknown>, context: parseJson(input.contextJson).value}
             : input.request);
-          const result = await simulatePolicy(document.getText(), request);
+          const result = await vscode.commands.executeCommand<AccessResult>('iamPolicyDebugger.simulate', uri, request);
           if (sequence !== revision || document.version !== version) return;
           last = {id, request, result, version};
           post({type: 'result', id, result});
@@ -51,7 +50,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
         editor.selection = new vscode.Selection(range.start, range.end);
         editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       } else if (input.type === 'save') {
-        const saved = await saveScenario(uri, {name: input.name, expected: input.expected, request: last.request});
+        const saved = await vscode.commands.executeCommand<vscode.Uri>('iamPolicyDebugger.saveScenario', uri, {name: input.name, expected: input.expected, request: last.request});
         await tests.refresh();
         post({type: 'saved', name: path.basename(saved.fsPath)});
       }
@@ -79,7 +78,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
     <div class="fields">
       <label class="wide" for="principal">Principal ARN<input id="principal" required placeholder="arn:aws:iam::123456789012:role/Application" autocomplete="off" spellcheck="false"></label>
       <label for="action">IAM action<input id="action" required placeholder="s3:GetObject" autocomplete="off" spellcheck="false"></label>
-      <label for="account">Resource account ID<input id="account" required pattern="[0-9]{12}" placeholder="123456789012" inputmode="numeric" autocomplete="off"><span class="hint">The account that owns the resource.</span></label>
+      <label for="account">Resource account ID<input id="account" required pattern="(?:[0-9]{12}|aws)" placeholder="123456789012" autocomplete="off"><span class="hint">The 12-digit owner account, or aws for an AWS-owned ARN.</span></label>
       <label class="wide" for="resource">Resource ARN<input id="resource" required placeholder="arn:aws:s3:::example-uploads/photo.jpg" autocomplete="off" spellcheck="false"><span class="hint">Use a concrete ARN. Use * only for actions without resource-level permissions.</span></label>
       <label class="wide" for="context">Request context (JSON)<textarea id="context" rows="4" spellcheck="false">{}</textarea><span class="hint">Values are strings or arrays of strings, for example {"aws:SecureTransport": "true"}.</span></label>
     </div>

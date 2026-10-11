@@ -62,7 +62,7 @@
               },
               "resourceAccountId": {
                 "type": "string",
-                "pattern": "^[0-9]{12}$"
+                "pattern": "^(?:[0-9]{12}|aws)$"
               },
               "context": {
                 "type": "object",

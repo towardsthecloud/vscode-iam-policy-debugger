@@ -123,6 +123,31 @@ exports.run = async function () {
     await policyDocument.save();
     await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', policyUri, {name: 'Read uploads', expected: 'Allowed', request}), /already exists/);
     checks.push('protect dirty policy buffers and existing scenario names while saving');
+    await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.simulate', policyUri, {...request, context: null}), /Context must be a JSON object/);
+    checks.push('explicitly null context is rejected instead of treated as omitted');
+    await setPolicy({Statement: {Effect: 'Allow', Action: 'iam:GetPolicy', Resource: 'arn:aws:iam::aws:policy/*'}});
+    const owned = await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request, action: 'iam:GetPolicy', resource: 'arn:aws:iam::aws:policy/AWSLambdaExecute', resourceAccountId: 'aws'});
+    assert.equal(owned.decision, 'Allowed');
+    checks.push('AWS-owned managed policy ARNs are supported with resourceAccountId aws');
+    await setPolicy({Statement: {Effect: 'Allow', Action: 'iam:GetPolicy', Resource: '*'}});
+    for (const partition of ['aws','aws-cn','aws-us-gov','aws-iso','aws-iso-b','aws-iso-e','aws-iso-f']) {
+      const result = await vscode.commands.executeCommand('iamPolicyDebugger.simulate', conditionalUri, {...request,
+        principal: `arn:${partition}:iam::123456789012:role/Application`, action: 'iam:GetPolicy',
+        resource: `arn:${partition}:iam::123456789012:policy/Example`});
+      assert.equal(result.decision, 'Allowed', partition);
+    }
+    checks.push('principal and resource ARNs work in public and isolated AWS partitions');
+    await Promise.all([
+      vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', policyUri, {name: 'Concurrent short', expected: 'Allowed', request}),
+      vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', policyUri, {name: 'Concurrent longer name that must preserve the first scenario', expected: 'Allowed', request})
+    ]);
+    const concurrent = JSON.parse(await fs.readFile(scenarioFile.fsPath, 'utf8'));
+    assert.deepEqual(concurrent.tests.map(test => test.name).sort(), ['Read uploads', 'Concurrent short', 'Concurrent longer name that must preserve the first scenario'].sort());
+    checks.push('concurrent saves preserve both scenarios and valid persisted JSON');
+
+
+
+
     if (process.env.IAM_UI_TEST === '1') {
       await setPolicy(policy);
       await conditionalDocument.save();

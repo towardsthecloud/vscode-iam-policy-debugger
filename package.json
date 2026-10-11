@@ -1,0 +1,74 @@
+{
+  "name": "iam-policy-debugger",
+  "displayName": "AWS IAM Policy Debugger",
+  "description": "Debug AWS IAM access decisions and save policy regression scenarios in VS Code.",
+  "author": "Danny Steenman",
+  "version": "0.1.0",
+  "publisher": "dannysteenman",
+  "homepage": "https://towardsthecloud.com",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/towardsthecloud/vscode-iam-policy-debugger.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "galleryBanner": {
+    "color": "#2B2C33",
+    "theme": "dark"
+  },
+  "categories": [
+    "Other",
+    "Testing"
+  ],
+  "keywords": [
+    "aws",
+    "iam",
+    "policy",
+    "debugger",
+    "testing",
+    "security"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.iam-tests.json"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc --noEmit && node scripts/build.cjs",
+    "watch": "node scripts/build.cjs --watch",
+    "test": "npm run compile && node --test tests/*.test.cjs",
+    "test:integration": "npm run package && node scripts/test-vscode.cjs",
+    "package": "npm run compile && vsce package --no-dependencies --out .vscode-test/iam-policy-debugger.vsix",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "iamPolicyDebugger.debugPolicy",
+        "title": "IAM: Debug Access for Current Policy"
+      }
+    ]
+  },
+  "bugs": {
+    "url": "https://github.com/towardsthecloud/vscode-iam-policy-debugger/issues"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Policy debugging and saved scenarios require a trusted workspace."
+    },
+    "virtualWorkspaces": false
+  },
+  "dependencies": {
+    "@actsecurity/iam-simulate": "0.1.184"
+  }
+}

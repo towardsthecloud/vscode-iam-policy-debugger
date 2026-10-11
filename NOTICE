@@ -1,0 +1,3 @@
+Scaffold adapted from towardsthecloud/vscode-iam-actions-snippets, copyright Danny Steenman, licensed under Apache-2.0. Original license retained in licenses/scaffold-Apache-2.0.txt.
+
+IAM simulation uses @actsecurity/iam-simulate by ACT Security Labs, licensed under AGPL-3.0. This extension is distributed under AGPL-3.0-only.

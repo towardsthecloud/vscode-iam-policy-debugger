@@ -41,6 +41,19 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     result = run([file]);
     assert.equal(result.status, 0, 'escaped template markers cannot hide following policy blocks: ' + result.stdout);
   }
+  for (const [attributes, statementAttributes, error] of [
+    ['policy_id = null', '', undefined],
+    ['policy_id = "ExistingId"', '', /Id/],
+    ['version = null', 'sid = null\neffect = null\nnot_actions = null\nnot_resources = null', undefined],
+    ['', 'constructor = null', /Unsupported Terraform statement attribute/],
+  ]) {
+    fs.writeFileSync(terraformFile, `data "aws_iam_policy_document" "nullable" {\n${attributes}\nstatement {\n${statementAttributes}\nactions = ["s3:GetObject"]\nresources = ["*"]\n}\n}`);
+    save({...scenario, policy: 'policies.tf', policyId: 'data.aws_iam_policy_document.nullable', templateValues: {}});
+    const result = run([file]), outcome = JSON.parse(result.stdout).results[0];
+    assert.equal(result.status, error ? 2 : 0, result.stdout);
+    if (error) assert.match(outcome.error, error);
+    else assert.equal(outcome.actual, 'Allowed');
+  }
   fs.writeFileSync(terraformFile, terraformText);
   const invalidPolicy = path.join(root, 'invalid-policy.json');
   fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: ['Allow'], Action: 's3:GetObject', Resource: '*'}}));
@@ -72,9 +85,13 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     ['question marks cannot consume ARN separators', 'arn:aws:s3:?:*:bucket/key', {...scenario.request, resource: 'arn:aws:s3:::somebucket/prefix:bucket/key'}, undefined, 'ImplicitlyDenied'],
     ['trailing stars retain documented cross-segment matching', 'arn:aws:s3:*:*:bucket/key', {...scenario.request, resource: 'arn:aws:s3:::somebucket/prefix:bucket/key'}],
     ['question marks still match within a resource segment', 'arn:aws:s3:::example-uploads/photo.jp?', scenario.request],
+    ['non-terminal stars cannot consume ARN separators', 'arn:aws:cloudwatch:us-east-1:*x:alarm:foo', {...scenario.request, action: 'cloudwatch:DeleteAlarms', resource: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:myx:alarm:foo'}, undefined, 'ImplicitlyDenied'],
+    ['non-terminal stars match within a segment', 'arn:aws:s3:::example-uploads/ph*.jpg', scenario.request],
+    ['stars before policy variables remain non-terminal', 'arn:aws:s3:::example-uploads/*${aws:username}/photo.jpg', {...scenario.request, resource: 'arn:aws:s3:::example-uploads/prefix:alice/photo.jpg', context: {'aws:username': 'alice'}}, undefined, 'ImplicitlyDenied'],
+    ['stars before policy variables still match within a segment', 'arn:aws:s3:::example-uploads/*${aws:username}/photo.jpg', {...scenario.request, resource: 'arn:aws:s3:::example-uploads/prefix-alice/photo.jpg', context: {'aws:username': 'alice'}}],
     ['complete SQS queue ARNs remain supported', '*', {...scenario.request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs:us-east-1:123456789012:jobs'}],
   ]) {
-    fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: 'Allow', Action: '*', Resource: resource}}));
+    fs.writeFileSync(invalidPolicy, JSON.stringify({Version: '2012-10-17', Statement: {Effect: 'Allow', Action: '*', Resource: resource}}));
     save({...scenario, policy: 'invalid-policy.json', policyId: undefined, templateValues: undefined, request, expected});
     const result = run([file]);
     assert.equal(result.status, error ? 2 : 0, `${name}: ${result.stdout}`);

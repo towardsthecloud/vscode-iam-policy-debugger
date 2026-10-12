@@ -131,8 +131,10 @@ function resolveValue(value: string, context: AccessRequest['context'], variable
   let result = '', pattern = '', cursor = 0, colons = 0, unresolved = false;
   const append = (fragment: string, literal: boolean): void => {
     result += fragment;
-    for (const character of fragment) {
-      pattern += literal ? escapeRegex(character) : character === '*' ? (arn === 'condition' && colons < 5 ? '[^:]*' : '.*')
+    for (let index = 0; index < fragment.length; index++) {
+      const character = fragment[index], next = value[cursor + index + 1];
+      const boundedStar = (arn === 'condition' && colons < 5) || (arn === 'resource' && next !== undefined && next !== ':');
+      pattern += literal ? escapeRegex(character) : character === '*' ? (boundedStar ? '[^:]*' : '.*')
         : character === '?' ? (arn === 'resource' || (arn === 'condition' && colons < 5) ? '[^:]' : '.') : escapeRegex(character);
       if (character === ':') colons++;
     }

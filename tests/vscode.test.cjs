@@ -217,14 +217,31 @@ exports.run = async function () {
     const outsidePolicy = path.join(outsideDirectory, 'external.json');
     const linkedPolicy = path.join(process.env.IAM_TEST_WORKSPACE, 'linked.json');
     const linkedSuite = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'linked.iam-tests.json'));
+    const internalPolicy = path.join(process.env.IAM_TEST_WORKSPACE, 'internal-link.json');
+    const internalSuite = path.join(process.env.IAM_TEST_WORKSPACE, 'internal-link.iam-tests.json');
+    const outsideSuite = path.join(outsideDirectory, 'external.iam-tests.json');
+    const destinationPolicy = path.join(process.env.IAM_TEST_WORKSPACE, 'destination-link.json');
+    const destinationSuite = path.join(process.env.IAM_TEST_WORKSPACE, 'destination-link.iam-tests.json');
     try {
       await fs.writeFile(outsidePolicy, JSON.stringify({Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*'}}));
       await fs.symlink(outsidePolicy, linkedPolicy);
+      await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', vscode.Uri.file(linkedPolicy), {name: 'Must not save', expected: 'Allowed', request}), /inside.*workspace/);
+      await assert.rejects(fs.stat(linkedSuite.fsPath), {code: 'ENOENT'});
       await vscode.workspace.fs.writeFile(linkedSuite, Buffer.from(JSON.stringify({version: 1, tests: [{name: 'External symlink', policy: 'linked.json', expected: 'Allowed', request}]})));
       const linkedOutcomes = await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', linkedSuite);
       assert.equal(linkedOutcomes[0].status, 'errored', 'Testing panel rejects policies reached through an escaping symlink');
       assert.match(linkedOutcomes[0].error, /inside.*workspace/);
+      await fs.symlink(policyUri.fsPath, internalPolicy);
+      const savedLink = await vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', vscode.Uri.file(internalPolicy), {name: 'Internal symlink', expected: 'ImplicitlyDenied', request});
+      assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', savedLink))[0].status, 'passed');
+      const outsideContents = '{"version":1,"tests":[]}';
+      await fs.writeFile(outsideSuite, outsideContents);
+      await fs.symlink(policyUri.fsPath, destinationPolicy);
+      await fs.symlink(outsideSuite, destinationSuite);
+      await assert.rejects(vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', vscode.Uri.file(destinationPolicy), {name: 'Outside destination', expected: 'Allowed', request}), /inside.*workspace/);
+      assert.equal(await fs.readFile(outsideSuite, 'utf8'), outsideContents);
     } finally {
+      for (const file of [internalPolicy, internalSuite, outsideSuite, destinationPolicy, destinationSuite]) await fs.unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
       await fs.unlink(linkedPolicy);
       await vscode.workspace.fs.delete(linkedSuite);
       await fs.unlink(outsidePolicy);
@@ -328,6 +345,7 @@ exports.run = async function () {
       ['root JSON template reference', {Version: '2012-10-17', Statement: {...diagnosticStatement, Resource: {'Fn::Sub': 'arn:aws:s3:::${Bucket}/*'}}}],
       ...[{Ref: 'TrustAction'}, {'Fn::Sub': '${TrustAction}'}].map(Action => ['unresolved trust action', {Resources: {Role: {Properties: {AssumeRolePolicyDocument: {Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {Service: 'lambda.amazonaws.com'}, Action}}}}}}]),
       ['known non-trust action still requires a resource', {Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {Service: 'lambda.amazonaws.com'}, Action: 's3:GetObject'}}, 'MISSING_RESOURCE'],
+      ['empty condition', {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {}}}, 'INVALID_CONDITION_TYPE'],
       ['empty condition operator', {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {StringEquals: {}}}}, 'INVALID_CONDITION_TYPE'],
       ...[{Type: 'Pass', End: true}, {Type: 'Task', Resource: 'arn:aws:states:::lambda:invoke', End: true}].map(state => [`Step Functions ${state.Type} state named Statement is not a policy`, {Resources: {Machine: {Type: 'AWS::StepFunctions::StateMachine', Properties: {Definition: {StartAt: 'Statement', States: {Statement: state}}}}, Policy: {Properties: {PolicyDocument: {Version: '2012-10-17', Statement: diagnosticStatement}}}}}]),
       ...['NumericEquals', 'DateEquals', 'IpAddress', 'BinaryEquals'].map(operator => [operator, {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {[operator]: {'aws:Example': '${aws:username}'}}}}, 'INVALID_CONDITION_VARIABLE']),

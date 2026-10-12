@@ -161,7 +161,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     }
     const condition = field(statement, 'Condition');
     if (condition) {
-      if (condition.type !== 'object') report(condition, 'INVALID_CONDITION_TYPE', 'Condition must be an object of operators and key/value pairs.');
+      if (condition.type !== 'object' || !condition.children?.length) report(condition, 'INVALID_CONDITION_TYPE', 'Condition must be a nonempty object of operators and key/value pairs.');
       else {
         const casing = new Map<string, string>();
         for (const operator of condition.children ?? []) {

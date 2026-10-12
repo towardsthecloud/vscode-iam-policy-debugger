@@ -258,12 +258,13 @@ async function policyDocument(block: Record<string, unknown>, values: TemplateVa
   const statements = block.statement;
   if (!Array.isArray(statements) || !statements.length) throw new Error('Terraform policy document requires statement blocks.');
   const policy: Record<string, unknown> = {Version: block.version ?? '2012-10-17', Statement: []};
-  if (block.policy_id !== undefined) policy.Id = block.policy_id;
+  if (block.policy_id != null) policy.Id = block.policy_id;
   for (const input of statements) {
     const statement = object(input), result: Record<string, unknown> = {Effect: statement.effect ?? 'Allow'};
     for (const [key, value] of Object.entries(statement)) {
-      if (statementFields[key]) result[statementFields[key]] = value;
-      else if (key === 'condition') {
+      if (Object.hasOwn(statementFields, key)) {
+        if (value != null) result[statementFields[key]] = value;
+      } else if (key === 'condition') {
         if (!Array.isArray(value)) throw new Error('Terraform condition requires blocks.');
         const conditions: Record<string, Record<string, unknown>> = Object.create(null);
         for (const input of value) {

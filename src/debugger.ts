@@ -57,7 +57,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
         editor.selection = new vscode.Selection(range.start, range.end);
         editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       } else if (input.type === 'save') {
-        const saved = await vscode.commands.executeCommand<vscode.Uri>('iamPolicyDebugger.saveScenario', uri, {name: input.name, expected: input.expected, request: last.request, ...last.options});
+        const saved = await vscode.commands.executeCommand<vscode.Uri>('iamPolicyDebugger.saveScenario', uri, {name: input.name, expected: input.expected, request: last.request, ...last.options}, last.version);
         await tests.refresh();
         post({type: 'saved', name: path.basename(saved.fsPath)});
       }

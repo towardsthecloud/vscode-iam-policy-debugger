@@ -128,6 +128,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node, unresol
     const sid = field(statement, 'Sid');
     if (sid && sid.type !== 'string') report(sid, 'INVALID_SID_TYPE', 'Sid must be a string.');
     if (sid?.type === 'string' && !isUnresolved(sid)) {
+      if (!field(statement, 'Principal') && !field(statement, 'NotPrincipal') && /[^a-z0-9]/i.test(sid.value)) report(sid, 'INVALID_SID', 'Identity-policy Sid must contain only ASCII letters and numbers.');
       if (sids.has(sid.value)) report(sid, 'DUPLICATE_SID', `Duplicate statement Sid: ${sid.value}. Use a unique Sid within the policy.`);
       sids.add(sid.value);
     }
@@ -152,7 +153,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node, unresol
     const trust = principal && actions.length > 0 && actions.every(node => isUnresolved(node) || /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity|SetContext)$/i.test(node.value));
     const resource = pair('Resource', 'NotResource', !trust);
     const resources = strings(resource, 'Resource');
-    for (const value of resources) if (!isUnresolved(value) && value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
+    for (const value of resources) if (!isUnresolved(value) && value.value !== '*' && !/^arn:[^:*?]+:[^:*?]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be "*" or an ARN pattern without wildcards in the partition or service.');
     if (principal && principal.value !== '*') {
       if (principal.type !== 'object' || !principal.children?.length) report(principal, 'INVALID_PRINCIPAL_TYPE', 'Principal must be "*" or a nonempty object with AWS, Service, Federated or CanonicalUser keys.');
       else {

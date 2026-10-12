@@ -54,6 +54,23 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     if (error) assert.match(outcome.error, error);
     else assert.equal(outcome.actual, 'Allowed');
   }
+  for (const [interpolation, suffix, error] of [
+    ['${["photo.jpg"]}', 'photo.jpg', /interpolation/],
+    ['${{key = "photo.jpg"}}', '[object Object]', /interpolation/],
+    ['${null}', 'null', /interpolation/],
+    ['${42}', '42'],
+    ['${true}', 'true'],
+    ['${"photo.jpg"}', 'photo.jpg'],
+    [null, 'photo.jpg'],
+  ]) {
+    const resource = `arn:aws:s3:::example-uploads/${suffix}`;
+    const expression = interpolation === null ? '"${["' + resource + '"]}"' : '"arn:aws:s3:::example-uploads/' + interpolation + '"';
+    fs.writeFileSync(terraformFile, `resource "aws_iam_policy" "interpolated" {\npolicy = jsonencode({Statement = {Effect = "Allow", Action = "s3:GetObject", Resource = ${expression}}})\n}`);
+    save({...scenario, policy: 'policies.tf', policyId: 'resource.aws_iam_policy.interpolated.policy', templateValues: {}, request: {...scenario.request, resource}});
+    const result = run([file]), outcome = JSON.parse(result.stdout).results[0];
+    assert.equal(result.status, error ? 2 : 0, `${expression}: ${result.stdout}`);
+    if (error) assert.match(outcome.error, error); else assert.equal(outcome.actual, 'Allowed');
+  }
   fs.writeFileSync(terraformFile, terraformText);
   const invalidPolicy = path.join(root, 'invalid-policy.json');
   fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: ['Allow'], Action: 's3:GetObject', Resource: '*'}}));
@@ -84,6 +101,8 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
   }
   for (const [name, resource, request, error, expected = 'Allowed'] of [
     ['request partitions must agree', '*', {...scenario.request, resource: 'arn:aws-cn:s3:::example-uploads/photo.jpg'}, /partition/],
+    ...['role/Admin Role', 'user/Alice:Admin', 'role/team/', 'role/' + 'a'.repeat(65)].map(resource => [`invalid IAM principal ${resource}`, '*', {...scenario.request, principal: `arn:aws:iam::123456789012:${resource}`}, /Principal/]),
+    ...['role/team:production/Deploy+=,.@_-', 'user/division/engineering/Alice'].map(resource => [`valid IAM principal ${resource}`, '*', {...scenario.request, principal: `arn:aws:iam::123456789012:${resource}`}]),
     ['SQS queue ARNs require an account', '*', {...scenario.request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs:us-east-1::jobs'}, /Resource type/],
     ['SQS queue ARNs require a region', '*', {...scenario.request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs::123456789012:jobs'}, /Resource type/],
     ['question marks cannot consume ARN separators', 'arn:aws:s3:?:*:bucket/key', {...scenario.request, resource: 'arn:aws:s3:::somebucket/prefix:bucket/key'}, undefined, 'ImplicitlyDenied'],
@@ -102,6 +121,40 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     const outcome = JSON.parse(result.stdout).results[0];
     if (error) assert.match(outcome.error, error);
     else assert.equal(outcome.actual, expected);
+  }
+  const variableResource = 'arn:aws:s3:::${aws:PrincipalTag/Bucket}/*';
+  for (const Effect of ['Allow', 'Deny']) for (const [field, resources, context, matched] of [
+    ['NotResource', variableResource, {}, false],
+    ['NotResource', variableResource, {'aws:PrincipalTag/Bucket': 'example-uploads'}, false],
+    ['NotResource', variableResource, {'aws:PrincipalTag/Bucket': 'private'}, true],
+    ['NotResource', [variableResource, 'arn:aws:s3:::${aws:PrincipalTag/Other}/*'], {'aws:PrincipalTag/Bucket': 'private'}, false],
+    ['NotResource', "arn:aws:s3:::${aws:PrincipalTag/Bucket, 'private'}/*", {}, true],
+    ['Resource', [variableResource, scenario.request.resource], {}, true],
+  ]) {
+    const expected = matched ? Effect === 'Allow' ? 'Allowed' : 'ExplicitlyDenied' : 'ImplicitlyDenied';
+    fs.writeFileSync(invalidPolicy, JSON.stringify({Version: '2012-10-17', Statement: {Effect, Action: 's3:GetObject', [field]: resources}}));
+    save({...scenario, policy: 'invalid-policy.json', policyId: undefined, templateValues: undefined, request: {...scenario.request, context}, expected});
+    const result = run([file]);
+    assert.equal(result.status, 0, `${Effect} ${field} ${JSON.stringify(context)}: ${result.stdout}`);
+    assert.equal(JSON.parse(result.stdout).results[0].actual, expected);
+  }
+  for (const [operator, value, actual, expected] of [
+    ['StringEqualsIfExists', 'private/', '', 'ImplicitlyDenied'],
+    ['StringEqualsIfExists', 'private/', undefined, 'Allowed'],
+    ['StringEquals', '', '', 'Allowed'],
+    ['StringLike', '', '', 'Allowed'],
+    ['ForAllValues:StringEquals', 'private/', [''], 'Allowed'],
+    ['ForAnyValue:StringEquals', 'private/', [''], 'ImplicitlyDenied'],
+    ['Null', 'false', '', 'Allowed'],
+    ['Null', 'true', '', 'ImplicitlyDenied'],
+    ['Null', 'false', [], 'ImplicitlyDenied'],
+    ['Null', 'false', 'private/', 'Allowed'],
+  ]) {
+    fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: 'Allow', Action: 's3:ListBucket', Resource: 'arn:aws:s3:::example-uploads', Condition: {[operator]: {'s3:prefix': value}}}}));
+    save({...scenario, policy: 'invalid-policy.json', policyId: undefined, templateValues: undefined, expected, request: {...scenario.request, action: 's3:ListBucket', resource: 'arn:aws:s3:::example-uploads', context: actual === undefined ? {} : {'s3:prefix': actual}}});
+    const result = run([file]);
+    assert.equal(result.status, 0, `${operator} ${JSON.stringify(actual)}: ${result.stdout}`);
+    assert.equal(JSON.parse(result.stdout).results[0].actual, expected);
   }
   const numericFailures = [];
   for (const [operator, value, actual, expected, literal = false] of [

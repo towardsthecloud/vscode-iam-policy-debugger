@@ -3,7 +3,7 @@ import { cloudPolicies } from './template-policies';
 
 export interface SourceRange { start: number; end: number }
 export type TemplateValues = Record<string, string>;
-export interface LoadedPolicy { text: string; rangeAt(path: (string | number)[]): SourceRange; unresolved: string[] }
+export interface LoadedPolicy { text: string; rangeAt(path: (string | number)[]): SourceRange; unresolved: string[]; unresolvedPaths: Set<string> }
 export interface PolicySource extends SourceRange {
   id: string;
   load(values: TemplateValues, tolerant?: boolean): Promise<LoadedPolicy>;

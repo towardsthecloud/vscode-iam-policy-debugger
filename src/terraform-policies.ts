@@ -171,9 +171,9 @@ export async function terraformPolicies(text: string, filename: string): Promise
       const base = `${kind}.${type}.${name}`;
       const inlineRanges = inlinePolicyRanges(tokens, first, last);
       if (kind === 'data') sources.push({id: base, ...range, load: async (values, tolerant = false) => {
-        const unresolved: string[] = [];
+        const unresolved: string[] = [], unresolvedPaths = new Set<string>();
         for (const key of Object.keys(block)) if (!['statement', 'version', 'policy_id'].includes(key)) throw new Error(`Unsupported policy-document attribute: ${key}. Use a resolved policy document.`);
-        const policy = await policyDocument(block, values, tolerant, unresolved, filename);
+        const policy = await policyDocument(block, values, tolerant, unresolved, unresolvedPaths, filename);
         const ranges = await policyDocumentRanges(text, tokens.slice(first + 3, last + 1), block, filename);
         return {text: JSON.stringify(policy), rangeAt: path => {
           for (let length = path.length; length >= 0; length--) {
@@ -181,7 +181,7 @@ export async function terraformPolicies(text: string, filename: string): Promise
             if (found) return found;
           }
           return range;
-        }, unresolved};
+        }, unresolved, unresolvedPaths};
       }});
       else {
         if (block.policy !== undefined) sources.push(policySource(block.policy, `${base}.policy`, range, text, filename));
@@ -201,7 +201,7 @@ export async function terraformPolicies(text: string, filename: string): Promise
 }
 function policySource(input: unknown, id: string, range: SourceRange, source: string, filename: string, searchRange = range): PolicySource {
   return {id, ...range, load: async (values, tolerant = false) => {
-    const unresolved: string[] = [], ranges = new Map<string, SourceRange>();
+    const unresolved: string[] = [], unresolvedPaths = new Set<string>(), ranges = new Map<string, SourceRange>();
     let value: unknown;
     if (typeof input !== 'string') throw new Error('Terraform policy must be JSON or a jsonencode expression.');
     const evaluated = input.startsWith('${') && input.endsWith('}');
@@ -211,7 +211,7 @@ function policySource(input: unknown, id: string, range: SourceRange, source: st
       const found = source.indexOf(expression, searchRange.start);
       const offset = found >= 0 && found + expression.length <= searchRange.end ? found : -1;
       const bytes = Buffer.from(expression);
-      value = evaluate(ast, expression, values, tolerant, unresolved, [], (path, node) => {
+      value = evaluate(ast, expression, values, tolerant, unresolved, unresolvedPaths, [], (path, node) => {
         if (offset < 0 || ranges.has(pointer(path))) return;
         const {start, end} = expressionRange(node, expression, bytes);
         ranges.set(pointer(path), {start: offset + start, end: offset + end});
@@ -219,22 +219,29 @@ function policySource(input: unknown, id: string, range: SourceRange, source: st
     } else value = input;
     if (typeof value !== 'string') throw new Error('Terraform policy expression must resolve to a JSON string.');
     const parsed = parseJson(value).value;
-    const resolved = evaluated ? parsed : await resolveParsed(parsed, values, tolerant, unresolved, filename);
-    return {text: JSON.stringify(resolved), rangeAt: path => ranges.get(pointer(path)) ?? range, unresolved};
+    const resolved = evaluated ? parsed : await resolveParsed(parsed, values, tolerant, unresolved, unresolvedPaths, filename);
+    return {text: JSON.stringify(resolved), rangeAt: path => ranges.get(pointer(path)) ?? range, unresolved, unresolvedPaths};
   }};
 }
-function evaluate(ast: Expression | null, source: string, values: TemplateValues, tolerant: boolean, unresolved: string[], path: (string | number)[] = [], locate?: (path: (string | number)[], node: Expression) => void): unknown {
+function evaluate(ast: Expression | null, source: string, values: TemplateValues, tolerant: boolean, unresolved: string[], unresolvedPaths: Set<string>, path: (string | number)[] = [], locate?: (path: (string | number)[], node: Expression) => void): unknown {
   if (!ast) throw new Error('Could not parse Terraform expression.');
   locate?.(path, ast);
-  const child = (node: Expression, next = path): unknown => evaluate(node, source, values, tolerant, unresolved, next, locate);
+  const child = (node: Expression, next = path): unknown => evaluate(node, source, values, tolerant, unresolved, unresolvedPaths, next, locate);
   if (ast.type === 'literalValue') {
     if (ast.meta.type === 'string') return ast.meta.value.replace(/\$\$\{/g, '${').replace(/%%\{/g, '%{');
     if (ast.meta.type === 'number') return parseNumber(ast.meta.value);
     if (ast.meta.type === 'bool' || ast.meta.value === 'null') return JSON.parse(ast.meta.value);
   }
-  if (ast.type === 'template') return ast.children.map(node => String(child(node))).join('');
+  if (ast.type === 'template') return ast.children.map(node => {
+    const value = child(node);
+    if (!['string', 'number', 'boolean'].includes(typeof value)) throw new Error('Terraform interpolation requires a string, number or boolean, not a collection or null.');
+    return String(value);
+  }).join('');
   if (ast.type === 'templateWrap') return child(ast.children[0]);
-  if (ast.type === 'scopeTraversal') return templateValue(ast.meta.fullAccessor, values, tolerant, unresolved);
+  if (ast.type === 'scopeTraversal') {
+    if (tolerant && !Object.hasOwn(values, ast.meta.fullAccessor)) unresolvedPaths.add(pointer(path));
+    return templateValue(ast.meta.fullAccessor, values, tolerant, unresolved);
+  }
   if (ast.type === 'tuple') return ast.children.map((node, index) => child(node, [...path, index]));
   if (ast.type === 'object') {
     const result: Record<string, unknown> = Object.create(null);
@@ -250,17 +257,17 @@ function evaluate(ast: Expression | null, source: string, values: TemplateValues
   if (ast.type === 'function' && ast.meta.name === 'jsonencode' && ast.children.length === 1) return JSON.stringify(child(ast.children[0]));
   throw new Error(`Unsupported Terraform expression: ${ast.type}. Supply explicit template values for references, or use literal/jsonencode policies.`);
 }
-async function resolveParsed(value: unknown, values: TemplateValues, tolerant: boolean, unresolved: string[], filename: string, providerVariables = false): Promise<unknown> {
-  if (Array.isArray(value)) return Promise.all(value.map(item => resolveParsed(item, values, tolerant, unresolved, filename, providerVariables)));
-  if (value && typeof value === 'object') return Object.fromEntries(await Promise.all(Object.entries(value).map(async ([key, item]) => [key, await resolveParsed(item, values, tolerant, unresolved, filename, providerVariables)])));
+async function resolveParsed(value: unknown, values: TemplateValues, tolerant: boolean, unresolved: string[], unresolvedPaths: Set<string>, filename: string, providerVariables = false, path: (string | number)[] = []): Promise<unknown> {
+  if (Array.isArray(value)) return Promise.all(value.map((item, index) => resolveParsed(item, values, tolerant, unresolved, unresolvedPaths, filename, providerVariables, [...path, index])));
+  if (value && typeof value === 'object') return Object.fromEntries(await Promise.all(Object.entries(value).map(async ([key, item]) => [key, await resolveParsed(item, values, tolerant, unresolved, unresolvedPaths, filename, providerVariables, [...path, key])])));
   if (typeof value !== 'string') return value;
   if (!value.includes('${')) return providerVariables ? value.replace(/&\{/g, '${') : value;
   // IAM variables are literal policy content, separate from Terraform references.
   const expression = JSON.stringify(value.replace(/\$\{([a-z][a-z0-9-]*:[^}]+)\}/gi, '$$${$1}'));
-  const resolved = String(evaluate(await getExpressionAst(filename, expression), expression, values, tolerant, unresolved));
+  const resolved = String(evaluate(await getExpressionAst(filename, expression), expression, values, tolerant, unresolved, unresolvedPaths, path));
   return providerVariables ? resolved.replace(/&\{/g, '${') : resolved;
 }
-async function policyDocument(block: Record<string, unknown>, values: TemplateValues, tolerant: boolean, unresolved: string[], filename: string): Promise<unknown> {
+async function policyDocument(block: Record<string, unknown>, values: TemplateValues, tolerant: boolean, unresolved: string[], unresolvedPaths: Set<string>, filename: string): Promise<unknown> {
   const statements = block.statement;
   if (!Array.isArray(statements) || !statements.length) throw new Error('Terraform policy document requires statement blocks.');
   const policy: Record<string, unknown> = {Version: block.version ?? '2012-10-17', Statement: []};
@@ -285,5 +292,5 @@ async function policyDocument(block: Record<string, unknown>, values: TemplateVa
     }
     (policy.Statement as unknown[]).push(result);
   }
-  return resolveParsed(policy, values, tolerant, unresolved, filename, true);
+  return resolveParsed(policy, values, tolerant, unresolved, unresolvedPaths, filename, true);
 }

@@ -49,9 +49,9 @@ export class PolicyValidation implements vscode.Disposable {
       if (sources.length) this.recognized.add(id); else this.recognized.delete(id);
       for (const source of sources) {
         const policy = await source.load({}, true);
-        const tree = parseTree(policy.text)!;
-        mapRanges(tree, [], policy);
-        findings.push(...await policyFindings(document, tree));
+        const tree = parseTree(policy.text)!, unresolved = new Set<Node>();
+        mapRanges(tree, [], policy, unresolved);
+        findings.push(...await policyFindings(document, tree, unresolved));
         if (policy.unresolved.length) findings.push(diagnostic(document, {offset: source.start, length: source.end - source.start} as Node,
           'UNRESOLVED_TEMPLATE_VALUES', `Supply template values in the debugger to evaluate: ${[...new Set(policy.unresolved)].join(', ')}.`, vscode.DiagnosticSeverity.Information));
       }
@@ -65,21 +65,23 @@ export class PolicyValidation implements vscode.Disposable {
   dispose(): void { for (const disposable of this.disposables) disposable.dispose(); }
 }
 
-function mapRanges(node: Node, path: (string | number)[], policy: LoadedPolicy): void {
+function mapRanges(node: Node, path: (string | number)[], policy: LoadedPolicy, unresolved: Set<Node>): void {
   const range = policy.rangeAt(path);
+  if (policy.unresolvedPaths.has(JSON.stringify(path))) unresolved.add(node);
   Object.assign(node, {offset: range.start, length: range.end - range.start});
   if (node.type === 'object') for (const property of node.children ?? []) {
     const key = property.children![0], value = property.children![1], next = [...path, key.value];
     const range = policy.rangeAt(next);
     Object.assign(property, {offset: range.start, length: range.end - range.start});
     Object.assign(key, {offset: range.start, length: range.end - range.start});
-    mapRanges(value, next, policy);
+    mapRanges(value, next, policy, unresolved);
   }
-  else if (node.type === 'array') node.children?.forEach((child, index) => mapRanges(child, [...path, index], policy));
+  else if (node.type === 'array') node.children?.forEach((child, index) => mapRanges(child, [...path, index], policy, unresolved));
 }
 
-async function policyFindings(document: vscode.TextDocument, tree: Node): Promise<vscode.Diagnostic[]> {
+async function policyFindings(document: vscode.TextDocument, tree: Node, unresolved = new Set<Node>()): Promise<vscode.Diagnostic[]> {
   const findings: vscode.Diagnostic[] = [];
+  const isUnresolved = (node: Node | undefined): boolean => node !== undefined && unresolved.has(node);
   const report = (node: Node, code: string, message: string, warning = false): void => {
     findings.push(diagnostic(document, node, code, message, warning ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error));
   };
@@ -110,7 +112,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
   knownFields(tree, ['Version', 'Id', 'Statement']);
   const version = field(tree, 'Version');
   if (!version) report(tree, 'MISSING_VERSION', 'Policy version is missing. Add "Version": "2012-10-17" for modern policy language features.', true);
-  else if (!['2012-10-17', '2008-10-17'].includes(version.value)) report(version, 'INVALID_VERSION', 'Version must be 2012-10-17 or 2008-10-17.');
+  else if (!isUnresolved(version) && !['2012-10-17', '2008-10-17'].includes(version.value)) report(version, 'INVALID_VERSION', 'Version must be 2012-10-17 or 2008-10-17.');
   const policyId = field(tree, 'Id');
   if (policyId && policyId.type !== 'string') report(policyId, 'INVALID_ID_TYPE', 'Id must be a string.');
   const statements = field(tree, 'Statement');
@@ -125,13 +127,13 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     knownFields(statement, ['Sid', 'Effect', 'Action', 'NotAction', 'Resource', 'NotResource', 'Principal', 'NotPrincipal', 'Condition']);
     const sid = field(statement, 'Sid');
     if (sid && sid.type !== 'string') report(sid, 'INVALID_SID_TYPE', 'Sid must be a string.');
-    if (sid?.type === 'string' && !sid.value.includes('${template:')) {
+    if (sid?.type === 'string' && !isUnresolved(sid)) {
       if (sids.has(sid.value)) report(sid, 'DUPLICATE_SID', `Duplicate statement Sid: ${sid.value}. Use a unique Sid within the policy.`);
       sids.add(sid.value);
     }
     const effect = field(statement, 'Effect');
     if (!effect) report(statement, 'MISSING_EFFECT', 'Statement requires Effect: Allow or Deny.');
-    else if (effect.type !== 'string' || (!effect.value.includes('${template:') && !['Allow', 'Deny'].includes(effect.value))) report(effect, 'INVALID_EFFECT', 'Effect must be Allow or Deny.');
+    else if (effect.type !== 'string' || (!isUnresolved(effect) && !['Allow', 'Deny'].includes(effect.value))) report(effect, 'INVALID_EFFECT', 'Effect must be Allow or Deny.');
     const pair = (positive: string, negative: string, required = true): Node | undefined => {
       const left = field(statement, positive), right = field(statement, negative);
       if (left && right) report(right, 'UNSUPPORTED_ELEMENT_COMBINATION', `Use ${positive} or ${negative}, never both.`);
@@ -141,24 +143,24 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     const action = pair('Action', 'NotAction');
     const actions = strings(action, 'Action');
     for (const value of actions) {
-      if (value.value.includes('${template:')) continue;
+      if (isUnresolved(value)) continue;
       try { await validateActionPattern(value.value); }
       catch (error) { report(value, 'INVALID_ACTION', error instanceof Error ? error.message : String(error)); }
     }
     const principal = pair('Principal', 'NotPrincipal', false);
-    if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny' && !String(effect?.value).includes('${template:')) report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
-    const trust = principal && actions.length > 0 && actions.every(node => node.value.includes('${template:') || /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity|SetContext)$/i.test(node.value));
+    if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny' && !isUnresolved(effect)) report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
+    const trust = principal && actions.length > 0 && actions.every(node => isUnresolved(node) || /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity|SetContext)$/i.test(node.value));
     const resource = pair('Resource', 'NotResource', !trust);
     const resources = strings(resource, 'Resource');
-    for (const value of resources) if (!value.value.includes('${template:') && value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
+    for (const value of resources) if (!isUnresolved(value) && value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
     if (principal && principal.value !== '*') {
-      if (principal.type !== 'object') report(principal, 'INVALID_PRINCIPAL_TYPE', 'Principal must be "*" or an object with AWS, Service, Federated or CanonicalUser keys.');
+      if (principal.type !== 'object' || !principal.children?.length) report(principal, 'INVALID_PRINCIPAL_TYPE', 'Principal must be "*" or a nonempty object with AWS, Service, Federated or CanonicalUser keys.');
       else {
         knownFields(principal, ['AWS', 'Service', 'Federated', 'CanonicalUser']);
         for (const property of principal.children ?? []) {
           const key = property.children![0].value;
           for (const value of strings(property.children![1], 'Principal')) {
-            if (value.value.includes('${template:')) continue;
+            if (isUnresolved(value)) continue;
             if (/[?*]/.test(value.value) && !(key === 'AWS' && value.value === '*')) report(value, 'INVALID_PRINCIPAL', 'Principal names and ARNs cannot contain partial wildcards. Use a specific principal or AWS: "*".');
           }
         }
@@ -176,14 +178,15 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
           if (entries.type !== 'object' || !entries.children?.length) { report(entries, 'INVALID_CONDITION_TYPE', 'Condition operator requires a nonempty object of condition keys.'); continue; }
           for (const property of entries.children ?? []) {
             const key = property.children![0], value = property.children![1];
+            if (!key.value || key.value.includes('${')) report(key, 'INVALID_CONDITION_KEY_FORMAT', 'Condition keys must be literal nonempty strings.');
             const previous = casing.get(key.value.toLowerCase());
             if (previous !== undefined && previous !== key.value) report(key, 'DUPLICATE_KEYS_WITH_DIFFERENT_CASE', `Condition key ${key.value} appears with different capitalization. Use the same spelling throughout Condition.`);
             casing.set(key.value.toLowerCase(), key.value);
             const values = value.type === 'array' ? value.children ?? [] : [value];
-            if (!values.length || values.some(node => !['string', 'number', 'boolean'].includes(node.type))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers or booleans, or nonempty arrays of these values.');
-            if (match && !/^(String|Arn)/.test(match[2]) && values.some(node => node.type === 'string' && /\$\{(?!template:)/.test(node.value))) report(value, 'INVALID_CONDITION_VARIABLE', `${match[2]} does not support policy variables.`);
+            if (!values.length || values.some(node => node.type !== 'string' && !(node.type === 'number' && /^(Numeric|Date)/.test(match?.[2] ?? '')) && !(node.type === 'boolean' && ['Bool', 'Null'].includes(match?.[2] ?? '')))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers for Numeric/Date, or booleans for Bool/Null, or nonempty arrays of supported values.');
+            if (match && !/^(String|Arn)/.test(match[2]) && values.some(node => node.type === 'string' && !isUnresolved(node) && node.value.includes('${'))) report(value, 'INVALID_CONDITION_VARIABLE', `${match[2]} does not support policy variables.`);
             if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.length !== 1) report(value, 'INVALID_CONDITION_MULTIPLE_BOOLEAN', `${match![2]} requires a single Boolean value.`);
-            if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !String(node.value).includes('${template:') && !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');
+            if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !isUnresolved(node) && !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');
           }
         }
       }

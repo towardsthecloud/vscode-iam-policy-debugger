@@ -61,8 +61,9 @@ export function validateRequest(input: unknown): AccessRequest {
   for (const key of ['principal', 'action', 'resource', 'resourceAccountId']) {
     if (typeof request[key] !== 'string' || !request[key]) throw new Error(`${key} is required.`);
   }
-  if (!/^arn:(aws(?:-[a-z0-9]+)*):iam::\d{12}:(user|role)\/.+$/.test(request.principal as string)) {
-    throw new Error('Principal must be an IAM user or role ARN. Session and anonymous principals are not supported in this release.');
+  const principal = /^arn:aws(?:-[a-z0-9]+)*:iam::\d{12}:(?:user|role)\/((?:[\x21-\x7e]+\/)?)([\w+=,.@-]{1,64})$/.exec(request.principal as string);
+  if (!principal || principal[1].length + 1 > 512) {
+    throw new Error('Principal must be an IAM user or role ARN with a valid path and name. Session and anonymous principals are not supported in this release.');
   }
   if (!/^[a-z0-9-]+:[a-z0-9]+$/i.test(request.action as string)) throw new Error('Choose one concrete IAM action, such as s3:GetObject.');
   if (!/^(?:\d{12}|aws)$/.test(request.resourceAccountId as string)) throw new Error('Resource account ID must contain 12 digits, or aws for an AWS-owned resource.');
@@ -237,7 +238,8 @@ function conditionsFor(value: unknown, context: AccessRequest['context'], modern
       if (base.startsWith('Arn') && values.some(value => !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(value))) throw new Error('ARN conditions require ARN values.');
       const contextKey = Object.keys(context).find(name => name.toLowerCase() === key.toLowerCase());
       const actual = contextKey === undefined ? [] : [context[contextKey]].flat();
-      const missing = contextKey === undefined || actual.length === 0 || actual.every(value => value === '');
+      const missing = contextKey === undefined || actual.length === 0;
+      const nullDataset = missing || actual.every(value => value === '');
       if (!set && base !== 'Null' && actual.length > 1) throw new Error(`Multivalued context ${key} requires a ForAnyValue or ForAllValues set operator.`);
       if (base === 'Bool' && actual.some(value => !['true','false'].includes(value))) throw new Error(`Context ${key} requires true or false.`);
       if (base.startsWith('Numeric')) for (const value of [...values, ...actual]) numericValue(value);
@@ -274,7 +276,7 @@ function conditionsFor(value: unknown, context: AccessRequest['context'], modern
       };
       let matched: boolean;
       if (base === 'Null') matched = values.includes(String(missing));
-      else if (missing) matched = Boolean(ifExists) || (set === 'ForAllValues') || (!set && negated);
+      else if (missing || (set && nullDataset)) matched = Boolean(ifExists) || (set === 'ForAllValues') || (!set && negated);
       else matched = set === 'ForAllValues' ? actual.every(each) : actual.some(each);
       result.push({key, operator, matched, missing});
     }
@@ -322,9 +324,9 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
     const conditionMatch = conditions.every(item => item.matched);
     const actionFound = actions.some(pattern => glob(pattern, request.action, true));
     const actionMatch = statement.NotAction === undefined ? actionFound : !actionFound;
-    const resourceFound = resources.map(pattern => resolveValue(pattern, request.context, policy.Version === '2012-10-17', 'resource'))
-      .some(value => value.value !== undefined && new RegExp(`^${value.pattern}$`, 's').test(request.resource));
-    const resourceMatch = statement.NotResource === undefined ? resourceFound : !resourceFound;
+    const resolvedResources = resources.map(pattern => resolveValue(pattern, request.context, policy.Version === '2012-10-17', 'resource'));
+    const resourceFound = resolvedResources.some(value => value.value !== undefined && new RegExp(`^${value.pattern}$`, 's').test(request.resource));
+    const resourceMatch = statement.NotResource === undefined ? resourceFound : !resourceFound && resolvedResources.every(value => value.value !== undefined);
     const node = statementNode?.type === 'array' ? findNodeAtLocation(tree, ['Statement', index]) : statementNode;
     return {index, sid: String(statement.Sid ?? `Statement ${index + 1}`), effect: String(statement.Effect),
       matched: actionMatch && resourceMatch && conditionMatch, actionMatch, resourceMatch,

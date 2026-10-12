@@ -51,10 +51,15 @@ export function cloudPolicies(text: string, filename: string): PolicySource[] {
     if (!Array.isArray(value) && (policyField || ('Statement' in value && (!path.length || shaped)) || (!path.length && 'Version' in value))) {
       const range = rangeAt(path);
       sources.push({id: path.length ? pointer(path) : '', ...range, load: async (values, tolerant = false) => {
-        const unresolved: string[] = [];
-        const policy = resolveCloud(value, values, tolerant, unresolved);
-        return {text: JSON.stringify(policy),
-          rangeAt: relative => rangeAt([...path, ...relative]), unresolved};
+        const unresolved: string[] = [], unresolvedPaths = new Set<string>();
+        const resolve = (value: unknown, path: (string | number)[] = []): unknown => {
+          const before = unresolved.length;
+          const resolved = resolveCloud(value, values, tolerant, unresolved, (value, key) => resolve(value, key === undefined ? path : [...path, key]));
+          if (unresolved.length > before) unresolvedPaths.add(JSON.stringify(path));
+          return resolved;
+        };
+        return {text: JSON.stringify(resolve(value)),
+          rangeAt: relative => rangeAt([...path, ...relative]), unresolved, unresolvedPaths};
       }});
     } else if (Array.isArray(value)) value.forEach((item, index) => visit(item, [...path, index]));
     else if (path.length || 'Resources' in value) for (const [key, item] of Object.entries(value)) visit(item, [...path, key]);
@@ -69,14 +74,14 @@ export function templateValue(key: string, values: TemplateValues, tolerant: boo
   unresolved.push(key);
   return '${template:' + key + '}';
 }
-function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean, unresolved: string[]): unknown {
-  if (Array.isArray(value)) return value.map(item => resolveCloud(item, values, tolerant, unresolved));
+function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean, unresolved: string[], resolve: (value: unknown, key?: string | number) => unknown): unknown {
+  if (Array.isArray(value)) return value.map((item, index) => resolve(item, index));
   if (!value || typeof value !== 'object') return value;
   const entries = Object.entries(value);
   if (entries.length === 1) {
     const [key, argument] = entries[0];
     if (key === 'Ref') {
-      if (typeof argument !== 'string') throw new Error('Ref requires a template name.');
+      if (typeof argument !== 'string' || !argument) throw new Error('Ref requires a nonempty template name.');
       return templateValue(argument, values, tolerant, unresolved);
     }
     if (key === 'Fn::GetAtt') {
@@ -90,13 +95,13 @@ function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean,
       const template = Array.isArray(argument) ? argument[0] : argument;
       const local = Array.isArray(argument) ? argument[1] : {};
       if (typeof template !== 'string' || !local || typeof local !== 'object' || Array.isArray(local)) throw new Error('Sub requires a string and optional value mapping.');
-      const bindings = {...values, ...Object.fromEntries(Object.entries(local).map(([key, value]) => [key, resolveCloud(value, values, tolerant, unresolved)]))} as TemplateValues;
+      const bindings = {...values, ...Object.fromEntries(Object.entries(local).map(([key, value]) => [key, resolve(value)]))} as TemplateValues;
       if (Object.values(bindings).some(value => typeof value !== 'string')) throw new Error('Sub mapping values must resolve to strings.');
       return template.replace(/\$\{([^}]+)\}/g, (_, name: string) => name.startsWith('!') ? '${' + name.slice(1) + '}' : templateValue(name, bindings, tolerant, unresolved));
     }
     if (key === 'Fn::Join') {
       if (!Array.isArray(argument) || argument.length !== 2 || typeof argument[0] !== 'string' || !Array.isArray(argument[1])) throw new Error('Join requires a delimiter and list of values.');
-      const parts = argument[1].map(item => resolveCloud(item, values, tolerant, unresolved));
+      const parts = argument[1].map(item => resolve(item));
       if (parts.some(value => typeof value !== 'string')) throw new Error('Join values must resolve to strings.');
       return parts.join(argument[0]);
     }
@@ -104,5 +109,5 @@ function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean,
       throw new Error(`Unsupported CloudFormation intrinsic: ${key}. Supply a resolved policy document.`);
     }
   }
-  return Object.fromEntries(entries.map(([key, item]) => [key, resolveCloud(item, values, tolerant, unresolved)]));
+  return Object.fromEntries(entries.map(([key, item]) => [key, resolve(item, key)]));
 }

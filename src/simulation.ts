@@ -38,6 +38,7 @@ export function parseJson(text: string): { value: unknown; tree: Node } {
     throw new Error(`Invalid JSON: ${errors.map(e => `${printParseErrorCode(e.error)} at offset ${e.offset}`).join(', ') || 'empty document'}`);
   }
   const visit = (node: Node): void => {
+    if (node.type === 'number' && (!Number.isFinite(node.value) || compareDecimals(text.slice(node.offset, node.offset + node.length), String(node.value)) !== 0)) throw new Error('JSON number loses precision. Supply a quoted decimal string instead.');
     if (node.type === 'object') {
       const keys = new Set<string>();
       for (const property of node.children ?? []) {
@@ -162,6 +163,21 @@ function numericValue(value: string): number {
   }
   return Number(value);
 }
+function compareDecimals(left: string, right: string): number {
+  const decimal = (value: string) => {
+    numericValue(value);
+    const [mantissa, exponent = '0'] = value.trim().toLowerCase().split('e');
+    const [whole, fraction = ''] = mantissa.replace(/^[+-]/, '').split('.');
+    const digits = (whole + fraction).replace(/^0+/, '');
+    return {sign: digits ? mantissa.startsWith('-') ? -1 : 1 : 0, digits, order: BigInt(exponent) + BigInt(digits.length - fraction.length)};
+  };
+  const a = decimal(left), b = decimal(right);
+  if (a.sign !== b.sign) return a.sign - b.sign;
+  if (!a.sign) return 0;
+  if (a.order !== b.order) return a.sign * (a.order < b.order ? -1 : 1);
+  const width = Math.max(a.digits.length, b.digits.length), x = a.digits.padEnd(width, '0'), y = b.digits.padEnd(width, '0');
+  return a.sign * (x === y ? 0 : x < y ? -1 : 1);
+}
 function dateValue(value: string): number {
   if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) return numericValue(value) * 1000;
   const parts = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.exec(value);
@@ -235,8 +251,7 @@ function conditionsFor(value: unknown, context: AccessRequest['context'], modern
           });
         }
         if (base.startsWith('Numeric') || base.startsWith('Date')) {
-          const parse = base.startsWith('Date') ? dateValue : numericValue;
-          const left = parse(actual), right = parse(expected);
+          const [left, right] = base.startsWith('Numeric') ? [compareDecimals(actual, expected), 0] : [dateValue(actual), dateValue(expected)];
           if (base.includes('LessThan')) return base.endsWith('Equals') ? left <= right : left < right;
           if (base.includes('GreaterThan')) return base.endsWith('Equals') ? left >= right : left > right;
           return left === right;

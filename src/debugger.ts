@@ -16,7 +16,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
   if (!sources.length) throw new Error('No IAM policy documents found in this file.');
   const source = sources.length === 1 ? sources[0] : (await vscode.window.showQuickPick(sources.map(source => ({label: source.id, source})), {placeHolder: 'Choose an IAM policy to debug'}))?.source;
   if (!source) return;
-  const isTemplate = source.id !== '';
+  const isTemplate = source.id !== '' || (await source.load({}, true)).unresolved.length > 0;
   const panel = vscode.window.createWebviewPanel('iamPolicyDebugger', 'IAM Policy Debugger', vscode.ViewColumn.Beside,
     {enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')]});
   let sequence = 0;
@@ -26,7 +26,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
     if (!message || typeof message !== 'object') return;
     const input = message as Record<string, unknown>;
     try {
-      if (input.type === 'ready') { post({type: 'init', policyName: path.basename(uri.fsPath) + (isTemplate ? ` · ${source.id}` : ''), isTemplate, scope: simulationScope}); return; }
+      if (input.type === 'ready') { post({type: 'init', policyName: path.basename(uri.fsPath) + (source.id ? ` · ${source.id}` : ''), isTemplate, scope: simulationScope}); return; }
       if (input.type === 'changed') { sequence++; last = undefined; return; }
       if (input.type === 'simulate') {
         if (typeof input.id !== 'number' || !Number.isSafeInteger(input.id)) return;
@@ -38,7 +38,7 @@ export async function openDebugger(context: vscode.ExtensionContext, tests: Scen
           const request = validateRequest(typeof input.contextJson === 'string'
             ? {...input.request as Record<string, unknown>, context: parseJson(input.contextJson).value}
             : input.request);
-          const options = validatePolicyOptions(isTemplate ? {policyId: source.id, templateValues: parseJson(String(input.templateJson ?? '{}')).value} : {});
+          const options = validatePolicyOptions(isTemplate ? {policyId: source.id || undefined, templateValues: parseJson(String(input.templateJson ?? '{}')).value} : {});
           const result = await vscode.commands.executeCommand<AccessResult>('iamPolicyDebugger.simulate', uri, request, options);
           if (sequence !== revision || document.version !== version) return;
           last = {id, request, options, result, version};

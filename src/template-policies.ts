@@ -34,12 +34,15 @@ export function cloudPolicies(text: string, filename: string): PolicySource[] {
     if (!value || typeof value !== 'object') return;
     if (visited.has(value)) throw new Error('Recursive YAML aliases are not supported in policy templates.');
     visited.add(value);
-    if (!Array.isArray(value) && ('Statement' in value || (!path.length && 'Version' in value))) {
+    const statement = (value as {Statement?: unknown}).Statement;
+    const shaped = [statement].flat().some(item => item && typeof item === 'object' && ['Effect', 'Action', 'NotAction', 'Principal', 'NotPrincipal'].some(key => key in item));
+    const policyField = ['PolicyDocument', 'AssumeRolePolicyDocument', 'KeyPolicy'].includes(String(path.at(-1)));
+    if (!Array.isArray(value) && (policyField || ('Statement' in value && (!path.length || shaped)) || (!path.length && 'Version' in value))) {
       const range = rangeAt(path);
       sources.push({id: path.length ? pointer(path) : '', ...range, load: async (values, tolerant = false) => {
         const unresolved: string[] = [];
         const policy = resolveCloud(value, values, tolerant, unresolved);
-        return {text: path.length || /\.ya?ml$/i.test(filename) ? JSON.stringify(policy) : text,
+        return {text: JSON.stringify(policy),
           rangeAt: relative => rangeAt([...path, ...relative]), unresolved};
       }});
     } else if (Array.isArray(value)) value.forEach((item, index) => visit(item, [...path, index]));

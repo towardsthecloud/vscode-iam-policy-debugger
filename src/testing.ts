@@ -9,6 +9,7 @@ export class ScenarioTests implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [this.controller];
   private readonly files = new Map<string, vscode.Uri>();
   private readonly revisions = new WeakMap<vscode.TestItem, number>();
+  private refreshRevision = 0;
 
   constructor() {
     this.controller.createRunProfile('Run IAM scenarios', vscode.TestRunProfileKind.Run, async (request, token) => {
@@ -33,10 +34,15 @@ export class ScenarioTests implements vscode.Disposable {
   }
 
   async refresh(): Promise<void> {
+    const revision = ++this.refreshRevision;
     const uris = await vscode.workspace.findFiles('**/*.iam-tests.json', '**/node_modules/**');
+    if (revision !== this.refreshRevision) return;
     const ids = new Set(uris.map(uri => uri.toString()));
     for (const [id] of this.controller.items) if (!ids.has(id)) { this.controller.items.delete(id); this.files.delete(id); }
-    for (const uri of uris) await this.discover(uri);
+    for (const uri of uris) {
+      if (revision !== this.refreshRevision) return;
+      await this.discover(uri);
+    }
   }
 
   private rootFor(uri: vscode.Uri): vscode.TestItem {
@@ -49,11 +55,11 @@ export class ScenarioTests implements vscode.Disposable {
 
   private revision(root: vscode.TestItem): number { return this.revisions.get(root) ?? 0; }
 
-  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite, expectedRevision?: number): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
-    const root = this.rootFor(uri);
+  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite, existing?: {root: vscode.TestItem; revision: number}): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
+    const root = existing?.root ?? this.rootFor(uri);
     const id = uri.toString();
-    const revision = expectedRevision ?? this.revision(root) + 1;
-    if (expectedRevision === undefined) this.revisions.set(root, revision);
+    const revision = existing?.revision ?? this.revision(root) + 1;
+    if (!existing) this.revisions.set(root, revision);
     let items: vscode.TestItem[] = [], failure: string | undefined;
     try {
       const suite = snapshot ?? await readSuite(uri);
@@ -96,7 +102,7 @@ export class ScenarioTests implements vscode.Disposable {
       }
       // Discovery returns the items it created; concurrent runs can replace the
       // live root before this await resumes without changing this snapshot.
-      const {items} = await this.discover(uri, suite, revision);
+      const {items} = await this.discover(uri, suite, {root, revision});
       for (const [index, scenario] of suite.tests.entries()) {
         const item = items[index];
         if ((request?.include && !selected(item, request.include)) || selected(item, request?.exclude)) continue;

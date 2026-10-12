@@ -18,7 +18,7 @@ export class PolicyValidation implements vscode.Disposable {
   }
 
   private validate(document: vscode.TextDocument): void {
-    const template = /\.(ya?ml|tf)$/i.test(document.uri.path) || (document.languageId === 'json' && /"Resources"\s*:/.test(document.getText()));
+    const template = /\.(ya?ml|tf)$/i.test(document.uri.path) || (document.languageId === 'json' && /"(?:Resources|Ref|Fn::[^"]+)"\s*:/.test(document.getText()));
     if (template) { void this.validateTemplate(document); return; }
     if (document.languageId !== 'json' || document.uri.path.endsWith('.iam-tests.json')) return;
     const errors: ParseError[] = [];
@@ -45,6 +45,7 @@ export class PolicyValidation implements vscode.Disposable {
     let findings: vscode.Diagnostic[] = [];
     try {
       const sources = await policiesIn(document.getText(), document.uri.fsPath);
+      if (document.isClosed || document.version !== revision) return;
       if (sources.length) this.recognized.add(id); else this.recognized.delete(id);
       for (const source of sources) {
         const policy = await source.load({}, true);
@@ -141,7 +142,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     }
     const principal = pair('Principal', 'NotPrincipal', false);
     if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny' && !String(effect?.value).includes('${template:')) report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
-    const trust = principal && actions.length > 0 && actions.every(node => /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity|SetContext)$/i.test(node.value));
+    const trust = principal && actions.length > 0 && actions.every(node => node.value.includes('${template:') || /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity|SetContext)$/i.test(node.value));
     const resource = pair('Resource', 'NotResource', !trust);
     const resources = strings(resource, 'Resource');
     for (const value of resources) if (!value.value.includes('${template:') && value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
@@ -167,7 +168,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
           const name = operator.children![0], entries = operator.children![1];
           const match = /^(?:(ForAnyValue|ForAllValues):)?(String(?:Equals|NotEquals|EqualsIgnoreCase|NotEqualsIgnoreCase|Like|NotLike)|Arn(?:Equals|NotEquals|Like|NotLike)|Numeric(?:Equals|NotEquals|LessThan|LessThanEquals|GreaterThan|GreaterThanEquals)|Date(?:Equals|NotEquals|LessThan|LessThanEquals|GreaterThan|GreaterThanEquals)|Bool|Null|IpAddress|NotIpAddress|BinaryEquals)(IfExists)?$/.exec(name.value);
           if (!match || (match[2] === 'Null' && (match[1] || match[3]))) report(name, 'INVALID_CONDITION_OPERATOR', `Invalid IAM condition operator: ${name.value}.`);
-          if (entries.type !== 'object') { report(entries, 'INVALID_CONDITION_TYPE', 'Condition operator requires an object of condition keys.'); continue; }
+          if (entries.type !== 'object' || !entries.children?.length) { report(entries, 'INVALID_CONDITION_TYPE', 'Condition operator requires a nonempty object of condition keys.'); continue; }
           for (const property of entries.children ?? []) {
             const key = property.children![0], value = property.children![1];
             const previous = casing.get(key.value.toLowerCase());

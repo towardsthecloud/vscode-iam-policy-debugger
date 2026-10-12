@@ -82,17 +82,41 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     if (error) assert.match(outcome.error, error);
     else assert.equal(outcome.actual, expected);
   }
+  const numericFailures = [];
+  for (const [operator, value, actual, expected, literal = false] of [
+    ['NumericEquals', '9007199254740993', '9007199254740992', 'ImplicitlyDenied'],
+    ['NumericLessThan', '9007199254740993', '9007199254740992', 'Allowed'],
+    ['NumericGreaterThan', '-9007199254740993', '-9007199254740992', 'Allowed'],
+    ['NumericEquals', '0.10000000000000000001', '0.1', 'ImplicitlyDenied'],
+    ['NumericNotEquals', '0.10000000000000000001', '0.1', 'Allowed'],
+    ['NumericEquals', '9.007199254740993e15', '9007199254740993', 'Allowed'],
+    ['NumericEquals', '1e-400', '0', 'ImplicitlyDenied'],
+    ['NumericEquals', '-0.000', '0', 'Allowed'],
+    ['NumericEquals', '+000123.4500e-2', '1.2345', 'Allowed'],
+    ['NumericEquals', '9007199254740993', '9007199254740992', undefined, true],
+    ['NumericEquals', '0.10000000000000000001', '0.1', undefined, true],
+  ]) {
+    let policy = JSON.stringify({Statement: {...statement, Condition: {[operator]: {'example:number': value}}}});
+    if (literal) policy = policy.replace(JSON.stringify(value), value);
+    fs.writeFileSync(invalidPolicy, policy);
+    save({...scenario, policy: 'invalid-policy.json', policyId: undefined, templateValues: undefined, request: {...scenario.request, context: {'example:number': actual}}, expected: expected ?? 'Allowed'});
+    const result = run([file]), outcome = JSON.parse(result.stdout).results[0];
+    if (result.status !== (literal ? 2 : 0) || (literal ? !/precision/i.test(outcome.error ?? '') : outcome.actual !== expected)) numericFailures.push({operator, value, actual, literal, outcome});
+  }
+  assert.deepEqual(numericFailures, []);
   const resource = 'arn:aws:s3:::example-uploads/*';
-  for (const [name, intrinsic, error] of [
+  for (const [name, intrinsic, error, rootPolicy = false] of [
     ['Sub rejects extra arguments', {'Fn::Sub': [resource, {}, 'extra']}, /Sub requires/],
     ['GetAtt rejects extra arguments', {'Fn::GetAtt': ['Bucket', 'Arn', 'Extra']}, /GetAtt requires/],
     ['GetAtt rejects non-string arguments', {'Fn::GetAtt': ['Bucket', 42]}, /GetAtt requires/],
     ['Sub accepts its two-argument form', {'Fn::Sub': [resource, {}]}],
     ['GetAtt accepts its two-argument form', {'Fn::GetAtt': ['Bucket', 'Arn']}],
     ['GetAtt accepts dotted attribute names', {'Fn::GetAtt': 'Bucket.Arn.Extra'}],
+    ['root JSON fragments use supplied bindings', {Ref: 'Bucket.Arn'}, undefined, true],
   ]) {
-    fs.writeFileSync(path.join(root, 'template.json'), JSON.stringify({Resources: {Policy: {Properties: {PolicyDocument: {Statement: {...statement, Resource: intrinsic}}}}}}));
-    save({...scenario, policy: 'template.json', policyId: '/Resources/Policy/Properties/PolicyDocument', templateValues: {'Bucket.Arn': resource, 'Bucket.Arn.Extra': resource, 'Bucket.42': resource}});
+    const policy = {Statement: {...statement, Resource: intrinsic}};
+    fs.writeFileSync(path.join(root, 'template.json'), JSON.stringify(rootPolicy ? policy : {Resources: {Policy: {Properties: {PolicyDocument: policy}}}}));
+    save({...scenario, policy: 'template.json', policyId: rootPolicy ? undefined : '/Resources/Policy/Properties/PolicyDocument', templateValues: {'Bucket.Arn': resource, 'Bucket.Arn.Extra': resource, 'Bucket.42': resource}});
     const result = run([file]);
     assert.equal(result.status, error ? 2 : 0, `${name}: ${result.stdout}`);
     if (error) assert.match(JSON.parse(result.stdout).results[0].error, error);

@@ -325,6 +325,11 @@ exports.run = async function () {
     const reviewFailures = [];
     const diagnosticStatement = {Effect: 'Allow', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'};
     const diagnosticCases = [
+      ['root JSON template reference', {Version: '2012-10-17', Statement: {...diagnosticStatement, Resource: {'Fn::Sub': 'arn:aws:s3:::${Bucket}/*'}}}],
+      ...[{Ref: 'TrustAction'}, {'Fn::Sub': '${TrustAction}'}].map(Action => ['unresolved trust action', {Resources: {Role: {Properties: {AssumeRolePolicyDocument: {Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {Service: 'lambda.amazonaws.com'}, Action}}}}}}]),
+      ['known non-trust action still requires a resource', {Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {Service: 'lambda.amazonaws.com'}, Action: 's3:GetObject'}}, 'MISSING_RESOURCE'],
+      ['empty condition operator', {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {StringEquals: {}}}}, 'INVALID_CONDITION_TYPE'],
+      ...[{Type: 'Pass', End: true}, {Type: 'Task', Resource: 'arn:aws:states:::lambda:invoke', End: true}].map(state => [`Step Functions ${state.Type} state named Statement is not a policy`, {Resources: {Machine: {Type: 'AWS::StepFunctions::StateMachine', Properties: {Definition: {StartAt: 'Statement', States: {Statement: state}}}}, Policy: {Properties: {PolicyDocument: {Version: '2012-10-17', Statement: diagnosticStatement}}}}}]),
       ...['NumericEquals', 'DateEquals', 'IpAddress', 'BinaryEquals'].map(operator => [operator, {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {[operator]: {'aws:Example': '${aws:username}'}}}}, 'INVALID_CONDITION_VARIABLE']),
       ...['ForAnyValue:Null', 'ForAllValues:Null'].map(operator => [operator, {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {[operator]: {'aws:TokenIssueTime': 'true'}}}}, 'INVALID_CONDITION_OPERATOR']),
       ['wildcard service', {Version: '2012-10-17', Statement: {...diagnosticStatement, Action: 'madeup:*'}}, 'INVALID_ACTION'],
@@ -415,6 +420,10 @@ exports.run = async function () {
     await vscode.workspace.applyEdit(restoreTemplate);
     checks.push('CloudFormation and Terraform live findings underline the original template value');
     if (process.env.IAM_UI_TEST === '1') {
+      const fragment = {Version: '2012-10-17', Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: {'Fn::Sub': 'arn:aws:s3:::${Bucket}/*'}}};
+      for (const [name, text] of [['root.json', JSON.stringify(fragment, null, 2)], ['root.yaml', require('yaml').stringify(fragment)]]) {
+        await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, name)), Buffer.from(text));
+      }
       await setPolicy(JSON.stringify(policy, null, 2));
       await conditionalDocument.save();
       await templateDocument.save();

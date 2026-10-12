@@ -121,6 +121,8 @@ This is a policy-matching tool, not an effective-permissions calculation or a li
 | Optional keys          | IfExists for supported operators except Null                                                 |
 | Multivalue context     | ForAnyValue and ForAllValues for String, ARN, Numeric, Date and IP operators                 |
 
+Quote precision-sensitive Numeric values as decimal strings. Numeric comparisons preserve their decimal digits; JSON number literals that would lose precision are rejected.
+
 Conditions across keys/operators use AND. Positive policy values use OR; negated values use NOR. Missing-key and empty-set behavior follows the supported AWS condition operators. Unqualified operators require a single request value; use a set operator for arrays containing multiple values. Combining set qualifiers with IfExists is not supported.
 
 Unsupported operators (including BinaryEquals), Principal/NotPrincipal, and malformed policy features return errors even in unmatched statements. IAM role sessions, anonymous/service principals, and actions requiring multiple required resource types are not supported. Use `*` as the request resource only for actions without resource-level permissions. The bundled MIT IAM catalog validates action names and resource types; it is a release snapshot, not a live catalog.

@@ -79,7 +79,8 @@ test('invalid suites become errored test roots without aborting profile runs', a
   }
   const disposable = () => ({dispose() {}});
   const runs = [];
-  let runProfile, listed = [], suiteReads = 0, holdNextSuiteRead = false, signalSuiteRead, releaseSuiteRead;
+  let controller, runProfile, listed = [], suiteReads = 0, holdNextSuiteRead = false, signalSuiteRead, releaseSuiteRead;
+  let holdNextList = false, signalList, releaseList;
   class TestRunRequest {
     constructor(include, exclude) { this.include = include; this.exclude = exclude; }
   }
@@ -87,7 +88,7 @@ test('invalid suites become errored test roots without aborting profile runs', a
   const vscode = {
     Uri: {joinPath: (base, ...parts) => uri(path.resolve(base.fsPath, ...parts))},
     TestRunProfileKind: {Run: 1}, TestRunRequest, TestMessage,
-    tests: {createTestController: () => ({
+    tests: {createTestController: () => (controller = {
       items: new Items(),
       createRunProfile(_label, _kind, handler) { runProfile = handler; },
       createTestItem: (id, label, itemUri) => ({id, label, uri: itemUri, children: new Items(), parent: undefined}),
@@ -109,7 +110,13 @@ test('invalid suites become errored test roots without aborting profile runs', a
     workspace: {
       isTrusted: true, getWorkspaceFolder: () => ({uri: uri(root)}), asRelativePath: value => path.relative(root, value.fsPath),
       createFileSystemWatcher: () => ({...disposable(), onDidCreate: disposable, onDidChange: disposable, onDidDelete: disposable}),
-      onDidChangeTextDocument: disposable, findFiles: async () => listed,
+      onDidChangeTextDocument: disposable, findFiles: async () => {
+        if (holdNextList) {
+          holdNextList = false;
+          return new Promise(resolve => { releaseList = resolve; signalList(); });
+        }
+        return listed;
+      },
       async openTextDocument(value) {
         if (value.fsPath.endsWith('.iam-tests.json')) {
           suiteReads++;
@@ -139,7 +146,7 @@ test('invalid suites become errored test roots without aborting profile runs', a
     assert.equal(invalid[0].name, 'invalid.iam-tests.json');
     assert.equal(invalid[0].status, 'errored');
     assert.match(invalid[0].error, /Invalid JSON/);
-    const invalidRoot = tests.controller.items.get(invalidUri.toString());
+    const invalidRoot = controller.items.get(invalidUri.toString());
     assert.equal(invalidRoot.error, invalid[0].error);
     assert.equal(invalidRoot.children.size, 0);
     assert.deepEqual(runs[1].errored, [{id: invalidUri.toString(), message: invalid[0].error}]);
@@ -147,7 +154,7 @@ test('invalid suites become errored test roots without aborting profile runs', a
 
     listed = [invalidUri, validUri];
     await tests.refresh();
-    const roots = [invalidUri, validUri].map(value => tests.controller.items.get(value.toString()));
+    const roots = [invalidUri, validUri].map(value => controller.items.get(value.toString()));
     await runProfile(new TestRunRequest(roots), undefined);
     assert.deepEqual(runs[2].errored.map(item => item.id), [invalidUri.toString()]);
     assert.deepEqual(runs[2].passed, ['valid scenario']);
@@ -164,7 +171,7 @@ test('invalid suites become errored test roots without aborting profile runs', a
       request: {principal: 'arn:aws:iam::123456789012:role/App', action: 's3:GetObject', resource: 'arn:aws:s3:::example/file', resourceAccountId: '123456789012', context: {}},
     }]}));
     await tests.refresh();
-    const repairedRoot = tests.controller.items.get(invalidUri.toString());
+    const repairedRoot = controller.items.get(invalidUri.toString());
     assert.deepEqual([...repairedRoot.children.values()].map(item => item.label), ['repaired scenario']);
     assert.equal(repairedRoot.error, undefined);
     releaseSuiteRead({getText: () => '{"version":'});
@@ -208,6 +215,24 @@ test('invalid suites become errored test roots without aborting profile runs', a
       }
       assert.deepEqual([...repairedRoot.children.values()].map(item => item.label), ['repaired scenario']);
       assert.equal(repairedRoot.error, undefined);
+    });
+    for (const phase of ['file listing', 'suite read', 'in-flight run']) await t.test(`deleted suites stay removed after an older ${phase}`, async () => {
+      listed = [invalidUri, validUri];
+      await tests.refresh();
+      const started = new Promise(resolve => {
+        if (phase === 'file listing') { holdNextList = true; signalList = resolve; }
+        else { holdNextSuiteRead = true; signalSuiteRead = resolve; }
+      });
+      const older = phase === 'in-flight run' ? tests.runFile(invalidUri) : tests.refresh();
+      await started;
+      listed = [];
+      await tests.refresh();
+      assert.equal(controller.items.size, 0);
+      if (phase === 'file listing') releaseList([invalidUri, validUri]);
+      else releaseSuiteRead({getText: () => staleSuite});
+      const outcomes = await older;
+      if (phase === 'in-flight run') assert.equal(outcomes[0].status, 'passed');
+      assert.equal(controller.items.size, 0, 'a stale operation must not recreate removed suite roots');
     });
   } finally {
     tests.dispose();

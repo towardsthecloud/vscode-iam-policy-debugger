@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Remove the duplicate README icon and place the CloudBurn tip after the introductory feature list.
+- Remove maintainer development and publishing instructions, and the outdated extension-pack announcement, from the README.
+
 ## 0.1.0
 
 - Reject malformed IAM and template inputs before simulation, and keep editor findings consistent with supported policy behavior.

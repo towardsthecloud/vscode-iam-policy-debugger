@@ -1,8 +1,15 @@
 # AWS IAM Policy Debugger
 
-<img src="images/iam-policy-debugger-extension-icon.png" alt="IAM Policy Debugger icon" width="96">
-
 Validate IAM policies while you edit, explain an identity-policy access decision, and keep the expected outcome as a regression test. Everything runs locally in VS Code. No AWS credentials are required.
+
+- Catch policy errors and security warnings as editor squiggles and Problems entries.
+- See why each statement matched or failed: action, resource, and individual conditions.
+- Jump from the explanation to the statement in your editor.
+- Save a named scenario and choose its expected outcome.
+- Discover and run `*.iam-tests.json` files in the Testing panel.
+- Test current editor contents, including unsaved policy changes.
+- Debug policies inside CloudFormation JSON/YAML and Terraform files with explicit template values.
+- Run the same saved scenarios in CI with a local CLI.
 
 <!-- TIP-LIST:START -->
 > [!TIP]
@@ -14,15 +21,6 @@ Validate IAM policies while you edit, explain an identity-policy access decision
 >
 > Want it managed across your AWS accounts? [CloudBurn Platform](https://cloudburn.io) runs it for you and keeps scan results in your own account. Join the waitlist for 30% off.
 <!-- TIP-LIST:END -->
-
-- Catch policy errors and security warnings as editor squiggles and Problems entries.
-- See why each statement matched or failed: action, resource, and individual conditions.
-- Jump from the explanation to the statement in your editor.
-- Save a named scenario and choose its expected outcome.
-- Discover and run `*.iam-tests.json` files in the Testing panel.
-- Test current editor contents, including unsaved policy changes.
-- Debug policies inside CloudFormation JSON/YAML and Terraform files with explicit template values.
-- Run the same saved scenarios in CI with a local CLI.
 
 ## See it in action
 
@@ -194,43 +192,6 @@ For GitHub Actions, after checkout and Node setup, use a step like this in your 
 
 - [AWS IAM Actions Snippets](https://marketplace.visualstudio.com/items?itemName=dannysteenman.iam-actions-snippets) completes IAM actions and explains wildcard matches while authoring policies.
 - [AWS IAM Service Principal Snippets](https://marketplace.visualstudio.com/items?itemName=dannysteenman.iam-service-principal-snippets) completes service principals in trust policies and CDK roles.
-- The [Terraform](https://github.com/towardsthecloud/vscode-terraform-extension-pack), [CloudFormation](https://github.com/towardsthecloud/vscode-cloudformation-extension-pack) and [CDK](https://github.com/towardsthecloud/vscode-cdk-extension-pack) extension packs are being updated to include this debugger after its Marketplace release.
-
-## Development
-
-Scaffold adapted from [AWS IAM Actions Snippets](https://github.com/towardsthecloud/vscode-iam-actions-snippets).
-
-```sh
-fnm use
-npm ci
-npm run compile
-npm test
-npm run test:integration -- 1.85.0
-npm run package
-```
-
-Press F5 to launch an Extension Development Host with the examples workspace. Packaging writes `.vscode-test/iam-policy-debugger.vsix`. Integration tests unpack and execute that VSIX in an isolated VS Code profile. On Linux, run `xvfb-run -a npm test`. Reports are saved under `.vscode-test/results/`. CI tests the minimum and stable VS Code releases and produces a VSIX artifact without publishing it.
-
-For interactive UI validation, run `IAM_UI_TEST=1 npm run test:integration -- stable`, attach `playwright-cli -s=iam attach --cdp=http://127.0.0.1:9241`, and run `playwright-cli -s=iam run-code --filename=tests/playwright-ui.cjs`. The test host waits up to 10 minutes; finish with `curl http://127.0.0.1:9242`. The UI script exercises simulation, saving, invalidation, navigation, and a narrow panel. Its screenshot and trace stay in `.vscode-test/results/`. See [capture instructions](docs/images/README.md) for the README screenshots and demo.
-
-## Publish a release
-
-1. Add the repository Actions secrets `VSCE_TOKEN` (Visual Studio Marketplace) and `OPEN_VSX_TOKEN` (Open VSX),
-   with publishing access for `dannysteenman`.
-2. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` for the release, and merge the changes into `main`.
-3. From the intended release commit on `main`, create and push a tag matching the package version,
-   such as `v0.1.0` for version `0.1.0`:
-
-   ```sh
-   version=$(node -p 'require("./package.json").version')
-   git tag "v$version"
-   git push origin "v$version"
-   ```
-
-The release workflow checks the tag and main ancestry, then runs the existing minimum and stable VS Code checks.
-Only after both pass does it publish the stable job's validated VSIX to both registries without rebuilding it.
-Pull requests and pushes to `main` validate without publishing.
-If one registry fails, rerun the release workflow; already-published versions are skipped.
 
 ## License
 

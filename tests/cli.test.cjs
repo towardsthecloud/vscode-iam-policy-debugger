@@ -52,6 +52,52 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
   result = run([file]);
   assert.equal(result.status, 2, 'multiple Null values must not create an unconditional Allow');
   assert.match(JSON.parse(result.stdout).results[0].error, /Null requires a single/);
+  const statement = {Effect: 'Allow', Action: 's3:GetObject', Resource: '*'};
+  for (const [name, value, error] of [
+    ['Version must be a string', {Version: ['2012-10-17'], Statement: statement}, /Version/],
+    ['Id is not an identity-policy element', {Id: 'Policy', Statement: statement}, /Id/],
+    ['Sid rejects punctuation', {Statement: {...statement, Sid: 'Read-Uploads'}}, /Sid/],
+    ['NotAction rejects unknown wildcard services', {Statement: {Effect: 'Allow', NotAction: 'madeup:*', Resource: '*'}}, /does not exist/],
+    ['Action rejects unknown wildcard services even when unmatched', {Statement: [statement, {...statement, Action: 'madeup:*'}]}, /does not exist/],
+  ]) {
+    fs.writeFileSync(invalidPolicy, JSON.stringify(value));
+    const result = run([file]);
+    assert.equal(result.status, 2, `${name}: ${result.stdout}`);
+    assert.match(JSON.parse(result.stdout).results[0].error, error);
+  }
+  for (const [name, resource, request, error, expected = 'Allowed'] of [
+    ['request partitions must agree', '*', {...scenario.request, resource: 'arn:aws-cn:s3:::example-uploads/photo.jpg'}, /partition/],
+    ['SQS queue ARNs require an account', '*', {...scenario.request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs:us-east-1::jobs'}, /Resource type/],
+    ['SQS queue ARNs require a region', '*', {...scenario.request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs::123456789012:jobs'}, /Resource type/],
+    ['question marks cannot consume ARN separators', 'arn:aws:s3:?:*:bucket/key', {...scenario.request, resource: 'arn:aws:s3:::somebucket/prefix:bucket/key'}, undefined, 'ImplicitlyDenied'],
+    ['trailing stars retain documented cross-segment matching', 'arn:aws:s3:*:*:bucket/key', {...scenario.request, resource: 'arn:aws:s3:::somebucket/prefix:bucket/key'}],
+    ['question marks still match within a resource segment', 'arn:aws:s3:::example-uploads/photo.jp?', scenario.request],
+    ['complete SQS queue ARNs remain supported', '*', {...scenario.request, action: 'sqs:SendMessage', resource: 'arn:aws:sqs:us-east-1:123456789012:jobs'}],
+  ]) {
+    fs.writeFileSync(invalidPolicy, JSON.stringify({Statement: {Effect: 'Allow', Action: '*', Resource: resource}}));
+    save({...scenario, policy: 'invalid-policy.json', policyId: undefined, templateValues: undefined, request, expected});
+    const result = run([file]);
+    assert.equal(result.status, error ? 2 : 0, `${name}: ${result.stdout}`);
+    const outcome = JSON.parse(result.stdout).results[0];
+    if (error) assert.match(outcome.error, error);
+    else assert.equal(outcome.actual, expected);
+  }
+  const resource = 'arn:aws:s3:::example-uploads/*';
+  for (const [name, intrinsic, error] of [
+    ['Sub rejects extra arguments', {'Fn::Sub': [resource, {}, 'extra']}, /Sub requires/],
+    ['GetAtt rejects extra arguments', {'Fn::GetAtt': ['Bucket', 'Arn', 'Extra']}, /GetAtt requires/],
+    ['GetAtt rejects non-string arguments', {'Fn::GetAtt': ['Bucket', 42]}, /GetAtt requires/],
+    ['Sub accepts its two-argument form', {'Fn::Sub': [resource, {}]}],
+    ['GetAtt accepts its two-argument form', {'Fn::GetAtt': ['Bucket', 'Arn']}],
+    ['GetAtt accepts dotted attribute names', {'Fn::GetAtt': 'Bucket.Arn.Extra'}],
+  ]) {
+    fs.writeFileSync(path.join(root, 'template.json'), JSON.stringify({Resources: {Policy: {Properties: {PolicyDocument: {Statement: {...statement, Resource: intrinsic}}}}}}));
+    save({...scenario, policy: 'template.json', policyId: '/Resources/Policy/Properties/PolicyDocument', templateValues: {'Bucket.Arn': resource, 'Bucket.Arn.Extra': resource, 'Bucket.42': resource}});
+    const result = run([file]);
+    assert.equal(result.status, error ? 2 : 0, `${name}: ${result.stdout}`);
+    if (error) assert.match(JSON.parse(result.stdout).results[0].error, error);
+    else assert.equal(JSON.parse(result.stdout).results[0].actual, 'Allowed');
+  }
   fs.writeFileSync(file, '{"version":1,"tests":[]}');
   assert.equal(run([file]).status, 2, 'empty suites must not give a false green CI check');
   fs.writeFileSync('.vscode-test/results/cli.json', JSON.stringify({status: 'passed', checks: ['packaged CLI discovers suites, evaluates CloudFormation/Terraform, reports JSON, and returns 0/1/2 for pass/fail/error', 'unresolved references and paths outside root are errors', 'empty suites do not silently pass']}, null, 2));

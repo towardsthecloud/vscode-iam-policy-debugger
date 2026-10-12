@@ -19,7 +19,9 @@ export async function policyUriFor(suiteUri: vscode.Uri, relativePolicy: string)
 }
 
 export async function readSuite(uri: vscode.Uri): Promise<ScenarioSuite> {
-  return parseSuite((await vscode.workspace.openTextDocument(uri)).getText());
+  const suite = parseSuite((await vscode.workspace.openTextDocument(uri)).getText());
+  if (!suite.tests.length) throw new Error('Scenario suite is empty. Add at least one scenario.');
+  return suite;
 }
 
 const pendingSaves = new Map<string, Promise<vscode.Uri>>();

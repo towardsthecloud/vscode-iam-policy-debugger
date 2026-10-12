@@ -49,24 +49,24 @@ export class ScenarioTests implements vscode.Disposable {
 
   private revision(root: vscode.TestItem): number { return this.revisions.get(root) ?? 0; }
 
-  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
+  private async discover(uri: vscode.Uri, snapshot?: ScenarioSuite, expectedRevision?: number): Promise<{root: vscode.TestItem; items: vscode.TestItem[]}> {
     const root = this.rootFor(uri);
     const id = uri.toString();
-    let items: vscode.TestItem[] = [];
+    const revision = expectedRevision ?? this.revision(root) + 1;
+    if (expectedRevision === undefined) this.revisions.set(root, revision);
+    let items: vscode.TestItem[] = [], failure: string | undefined;
     try {
       const suite = snapshot ?? await readSuite(uri);
-      root.error = undefined;
       items = suite.tests.map(scenario => {
         const item = this.controller.createTestItem(`${id}#${encodeURIComponent(scenario.name)}`, scenario.name, uri);
         item.description = scenario.expected;
         return item;
       });
+    } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+    if (this.revision(root) === revision) {
+      root.error = failure;
       root.children.replace(items);
-      this.revisions.set(root, this.revision(root) + 1);
-    } catch (error) {
-      root.children.replace([]);
-      root.error = error instanceof Error ? error.message : String(error);
-      this.revisions.set(root, this.revision(root) + 1);
+      this.revisions.set(root, revision + 1);
     }
     return {root, items};
   }
@@ -96,7 +96,7 @@ export class ScenarioTests implements vscode.Disposable {
       }
       // Discovery returns the items it created; concurrent runs can replace the
       // live root before this await resumes without changing this snapshot.
-      const {items} = await this.discover(uri, suite);
+      const {items} = await this.discover(uri, suite, revision);
       for (const [index, scenario] of suite.tests.entries()) {
         const item = items[index];
         if ((request?.include && !selected(item, request.include)) || selected(item, request?.exclude)) continue;

@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.1.0 (unreleased preview)
+## 0.1.0
 
+- Reject malformed IAM and template inputs before simulation, and keep editor findings consistent with supported policy behavior.
+- Preserve the latest discovered scenarios during overlapping refreshes and runs; report empty suites as errors.
+- Retain integration-test reports and editor logs while cleaning temporary profiles.
 - Add Numeric, Date and IPv4/IPv6 conditions and IAM policy variables.
 - Select and validate policies inside CloudFormation and Terraform, with explicit reference values.
 - Preserve embedded policy selections in saved scenarios and run them in CI with the CLI.

@@ -61,7 +61,7 @@ test('an in-flight scenario run retains its snapshot while discovery reads edite
   }
 });
 
-test('invalid suites become errored test roots without aborting profile runs', async () => {
+test('invalid suites become errored test roots without aborting profile runs', async t => {
   const root = await fs.mkdtemp(path.resolve('.vscode-test/invalid-suite-'));
   const uri = filename => ({scheme: 'file', fsPath: filename, path: filename, toString: () => `file://${filename}`});
   const invalidUri = uri(path.join(root, 'invalid.iam-tests.json'));
@@ -177,6 +177,38 @@ test('invalid suites become errored test roots without aborting profile runs', a
     assert.equal(runs[3].ended, 1);
     assert.deepEqual([...repairedRoot.children.values()].map(item => item.label), ['repaired scenario']);
     assert.equal(repairedRoot.error, undefined);
+
+    const staleSuite = (await fs.readFile(validUri.fsPath, 'utf8')).replace('valid scenario', 'older scenario');
+    for (const [name, staleText, runOld, newestLast] of [
+      ['stale failed discovery cannot replace a repaired root', '{"version":'],
+      ['stale successful discovery cannot replace a refreshed root', staleSuite],
+      ['stale successful runs retain their snapshot without republishing it', staleSuite, true],
+      ['the newest discovery wins when it completes last', staleSuite, false, true],
+    ]) await t.test(name, async () => {
+      await tests.refresh();
+      const oldReadStarted = new Promise(resolve => { signalSuiteRead = resolve; });
+      holdNextSuiteRead = true;
+      const older = runOld ? tests.runFile(invalidUri) : tests.refresh();
+      await oldReadStarted;
+      const releaseOlder = releaseSuiteRead;
+      if (newestLast) {
+        const newReadStarted = new Promise(resolve => { signalSuiteRead = resolve; });
+        holdNextSuiteRead = true;
+        const newer = tests.refresh();
+        await newReadStarted;
+        releaseOlder({getText: () => staleText});
+        await older;
+        releaseSuiteRead({getText: () => fsSync.readFileSync(invalidUri.fsPath, 'utf8')});
+        await newer;
+      } else {
+        await tests.refresh();
+        releaseOlder({getText: () => staleText});
+        const outcomes = await older;
+        if (runOld) assert.equal(JSON.stringify(outcomes.map(item => [item.name, item.status])), JSON.stringify([['older scenario', 'passed']]));
+      }
+      assert.deepEqual([...repairedRoot.children.values()].map(item => item.label), ['repaired scenario']);
+      assert.equal(repairedRoot.error, undefined);
+    });
   } finally {
     tests.dispose();
     await fs.unlink(invalidUri.fsPath);

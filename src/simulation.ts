@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
-import { iamActionDetails, iamResourceTypeDetails } from '@actsecurity/iam-data';
+import { iamActionDetails, iamResourceTypeDetails, iamServiceExists } from '@actsecurity/iam-data';
 import { parseTree, getNodeValue, findNodeAtLocation, printParseErrorCode, type Node, type ParseError } from 'jsonc-parser';
 
 export type Decision = 'Allowed' | 'ExplicitlyDenied' | 'ImplicitlyDenied';
@@ -72,6 +72,7 @@ export function validateRequest(input: unknown): AccessRequest {
   if (arnAccount && arnAccount !== request.resourceAccountId) throw new Error('Resource account ID must match the account in the resource ARN.');
   if (/[?*]/.test(request.principal as string)) throw new Error('Principal must be a concrete ARN.');
   if (request.resource !== '*' && !/^arn:(aws(?:-[a-z0-9]+)*):[a-z0-9-]+:[^:]*:(?:[0-9]{12}|aws)?:.+$/.test(request.resource as string)) throw new Error('Resource must be a valid AWS resource ARN.');
+  if (request.resource !== '*' && (request.resource as string).split(':')[1] !== (request.principal as string).split(':')[1]) throw new Error('Principal and resource must use the same AWS partition.');
   const context = request.context === undefined ? {} : request.context;
   if (!context || typeof context !== 'object' || Array.isArray(context)) throw new Error('Context must be a JSON object.');
   const contextKeys = new Set<string>();
@@ -96,6 +97,13 @@ function strings(value: unknown, label: string): string[] {
   if (!values.length || !values.every(item => typeof item === 'string' && item.length)) throw new Error(`${label} requires nonempty strings.`);
   return values as string[];
 }
+export async function validateActionPattern(value: string): Promise<void> {
+  if (value === '*') return;
+  if (!/^[a-z0-9-]+:[a-z0-9*?]+$/i.test(value)) throw new Error('Invalid Action pattern.');
+  const [service, action] = value.split(':');
+  if (!await iamServiceExists(service)) throw new Error(`Service ${service} does not exist in the bundled IAM catalog.`);
+  if (!/[?*]/.test(action)) await iamActionDetails(service, action);
+}
 export function completeIdentityResourceArn(value: string): string {
   const parts = value.split(':');
   if (/^arn:[^:*?]+:[^:*?]+(?::.*)?$/.test(value) && parts.length < 6) return [...parts, ...Array<string>(6 - parts.length).fill('*')].join(':');
@@ -109,20 +117,22 @@ function arnParts(arn: string): string[] {
   const parts = arn.split(':');
   return [...parts.slice(0, 5), parts.slice(5).join(':')];
 }
-function arnLike(pattern: string, value: string): boolean {
-  const expected = arnParts(pattern), actual = arnParts(value);
-  if (!pattern.startsWith('arn:') || !value.startsWith('arn:')) throw new Error('ARN conditions require ARN values.');
-  return expected.every((part, index) => glob(part, actual[index]));
+function matchesResourceType(template: string, value: string): boolean {
+  const actual = arnParts(value);
+  return arnParts(template).every((part, index) => {
+    const pattern = part.split(/(\$\{[^}]+\})/).map(fragment => fragment.startsWith('${') ? '.+' : escapeRegex(fragment)).join('');
+    return new RegExp(`^${pattern}$`, 's').test(actual[index]);
+  });
 }
 interface ResolvedValue { value?: string; pattern: string }
 function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-function resolveValue(value: string, context: AccessRequest['context'], variables: boolean, arn = false): ResolvedValue {
+function resolveValue(value: string, context: AccessRequest['context'], variables: boolean, arn?: 'condition' | 'resource'): ResolvedValue {
   let result = '', pattern = '', cursor = 0, colons = 0, unresolved = false;
   const append = (fragment: string, literal: boolean): void => {
     result += fragment;
     for (const character of fragment) {
-      pattern += literal ? escapeRegex(character) : character === '*' ? (arn && colons < 5 ? '[^:]*' : '.*')
-        : character === '?' ? (arn && colons < 5 ? '[^:]' : '.') : escapeRegex(character);
+      pattern += literal ? escapeRegex(character) : character === '*' ? (arn === 'condition' && colons < 5 ? '[^:]*' : '.*')
+        : character === '?' ? (arn === 'resource' || (arn === 'condition' && colons < 5) ? '[^:]' : '.') : escapeRegex(character);
       if (character === ':') colons++;
     }
   };
@@ -198,7 +208,7 @@ function conditionsFor(value: unknown, context: AccessRequest['context'], modern
       const literals = raw.map(String);
       const supportsVariables = base.startsWith('String') || base.startsWith('Arn');
       if (!supportsVariables && literals.some(value => value.includes('${'))) throw new Error(`${base} does not support policy variables.`);
-      const resolved = literals.map(value => resolveValue(value, context, modernVariables && supportsVariables, base.startsWith('Arn')));
+      const resolved = literals.map(value => resolveValue(value, context, modernVariables && supportsVariables, base.startsWith('Arn') ? 'condition' : undefined));
       const values = resolved.flatMap(value => value.value === undefined ? [] : [value.value]);
       if ((base === 'Bool' || base === 'Null') && !values.every(value => ['true','false'].includes(value))) throw new Error(`${base} requires true or false.`);
       if (base.startsWith('Arn') && values.some(value => !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(value))) throw new Error('ARN conditions require ARN values.');
@@ -253,8 +263,8 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
   const request = validateRequest(input);
   const {value, tree} = parseJson(text);
   const policy = object(value, 'Policy');
-  for (const key of Object.keys(policy)) if (!['Version', 'Id', 'Statement'].includes(key)) throw new Error(`Unsupported policy field: ${key}`);
-  if (policy.Version !== undefined && !['2012-10-17', '2008-10-17'].includes(String(policy.Version))) throw new Error('Unsupported policy Version.');
+  for (const key of Object.keys(policy)) if (!['Version', 'Statement'].includes(key)) throw new Error(`Unsupported policy field: ${key}. Only identity policies are supported.`);
+  if (policy.Version !== undefined && (typeof policy.Version !== 'string' || !['2012-10-17', '2008-10-17'].includes(policy.Version))) throw new Error('Unsupported policy Version.');
   if (policy.Statement === undefined) throw new Error('Policy requires Statement.');
   const raw = Array.isArray(policy.Statement) ? policy.Statement : [policy.Statement];
   if (!raw.length) throw new Error('Policy requires at least one statement.');
@@ -265,10 +275,7 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
   if (details.resourceTypes.filter(type => type.required).length > 1) throw new Error('Actions requiring multiple resource types are not supported in this release.');
   if (!details.isWildcardOnly) {
     const types = await Promise.all(details.resourceTypes.map(type => iamResourceTypeDetails(service, type.name)));
-    const matchesType = types.some(type => {
-      const template = type.arn.replace(/\$\{[^}]+\}/g, '*');
-      return arnLike(template, request.resource);
-    });
+    const matchesType = types.some(type => matchesResourceType(type.arn, request.resource));
     if (!matchesType) throw new Error('Resource type does not match the requested IAM action.');
   }
   const statementNode = findNodeAtLocation(tree, ['Statement']);
@@ -276,23 +283,19 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
     const statement = object(value, `Statement ${index + 1}`);
     for (const key of Object.keys(statement)) if (!['Sid','Effect','Action','NotAction','Resource','NotResource','Condition'].includes(key)) throw new Error(`Unsupported statement field: ${key}. Only identity policies are supported.`);
     if (typeof statement.Effect !== 'string' || !['Allow','Deny'].includes(statement.Effect)) throw new Error('Statement Effect must be Allow or Deny.');
-    if (statement.Sid !== undefined && typeof statement.Sid !== 'string') throw new Error('Statement Sid must be a string.');
+    if (statement.Sid !== undefined && (typeof statement.Sid !== 'string' || /[^a-z0-9]/i.test(statement.Sid))) throw new Error('Statement Sid must be a string containing only letters and numbers.');
     if ((statement.Resource === undefined) === (statement.NotResource === undefined)) throw new Error('Statement requires exactly one of Resource or NotResource.');
     if ((statement.Action === undefined) === (statement.NotAction === undefined)) throw new Error('Statement requires exactly one of Action or NotAction.');
     const actions = strings(statement.Action ?? statement.NotAction, 'Action');
     const resources = strings(statement.Resource ?? statement.NotResource, 'Resource').map(completeIdentityResourceArn);
-    if (actions.some(value => value !== '*' && !/^[a-z0-9*?-]+:[a-z0-9*?]+$/i.test(value))) throw new Error('Invalid Action pattern.');
-    await Promise.all(actions.filter(value => !/[?*]/.test(value)).map(value => {
-      const [service, action] = value.split(':');
-      return iamActionDetails(service, action);
-    }));
+    await Promise.all(actions.map(validateActionPattern));
     if (resources.some(value => value.split('${')[0].split(':').length <= 5 && value.includes('${'))) throw new Error('Policy variables may only appear in the resource portion of an ARN.');
     if (resources.some(value => value !== '*' && !/^arn:[^:*?]+:[^:*?]+:[^:]*:[^:]*:.+$/.test(value))) throw new Error('Invalid Resource pattern.');
     const conditions = conditionsFor(statement.Condition, request.context, policy.Version === '2012-10-17');
     const conditionMatch = conditions.every(item => item.matched);
     const actionFound = actions.some(pattern => glob(pattern, request.action, true));
     const actionMatch = statement.NotAction === undefined ? actionFound : !actionFound;
-    const resourceFound = resources.map(pattern => resolveValue(pattern, request.context, policy.Version === '2012-10-17'))
+    const resourceFound = resources.map(pattern => resolveValue(pattern, request.context, policy.Version === '2012-10-17', 'resource'))
       .some(value => value.value !== undefined && new RegExp(`^${value.pattern}$`, 's').test(request.resource));
     const resourceMatch = statement.NotResource === undefined ? resourceFound : !resourceFound;
     const node = statementNode?.type === 'array' ? findNodeAtLocation(tree, ['Statement', index]) : statementNode;

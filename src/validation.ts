@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
 import { parseTree, findNodeAtLocation, getNodeValue, printParseErrorCode, type Node, type ParseError } from 'jsonc-parser';
-import { iamActionDetails } from '@actsecurity/iam-data';
 import {policiesIn, type LoadedPolicy} from './policies';
-import {completeIdentityResourceArn} from './simulation';
+import {completeIdentityResourceArn, validateActionPattern} from './simulation';
 
 export class PolicyValidation implements vscode.Disposable {
   private readonly collection = vscode.languages.createDiagnosticCollection('iamPolicy');
@@ -137,16 +136,12 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     const actions = strings(action, 'Action');
     for (const value of actions) {
       if (value.value.includes('${template:')) continue;
-      if (value.value !== '*' && !/^[a-z0-9-]+:[a-z0-9*?]+$/i.test(value.value)) report(value, 'INVALID_ACTION', 'Use an IAM service:Action name or action wildcard.');
-      else if (!/[?*]/.test(value.value)) {
-        const [service, name] = value.value.split(':');
-        try { await iamActionDetails(service, name); }
-        catch { report(value, 'INVALID_ACTION', `Action ${value.value} does not exist in the bundled IAM catalog. Check the service prefix and action name.`); }
-      }
+      try { await validateActionPattern(value.value); }
+      catch (error) { report(value, 'INVALID_ACTION', error instanceof Error ? error.message : String(error)); }
     }
     const principal = pair('Principal', 'NotPrincipal', false);
     if (field(statement, 'NotPrincipal') && effect?.value !== 'Deny' && !String(effect?.value).includes('${template:')) report(field(statement, 'NotPrincipal')!, 'INVALID_NOT_PRINCIPAL', 'NotPrincipal is supported only with Effect: Deny.');
-    const trust = principal && actions.length > 0 && actions.every(node => /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity)$/i.test(node.value));
+    const trust = principal && actions.length > 0 && actions.every(node => /^sts:(?:AssumeRole(?:WithSAML|WithWebIdentity)?|TagSession|SetSourceIdentity|SetContext)$/i.test(node.value));
     const resource = pair('Resource', 'NotResource', !trust);
     const resources = strings(resource, 'Resource');
     for (const value of resources) if (!value.value.includes('${template:') && value.value !== '*' && !/^arn:[^:]+:[^:]+:[^:]*:[^:]*:.+$/.test(principal ? value.value : completeIdentityResourceArn(value.value))) report(value, 'INVALID_RESOURCE', 'Resource must be an ARN pattern or "*".');
@@ -171,7 +166,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
         for (const operator of condition.children ?? []) {
           const name = operator.children![0], entries = operator.children![1];
           const match = /^(?:(ForAnyValue|ForAllValues):)?(String(?:Equals|NotEquals|EqualsIgnoreCase|NotEqualsIgnoreCase|Like|NotLike)|Arn(?:Equals|NotEquals|Like|NotLike)|Numeric(?:Equals|NotEquals|LessThan|LessThanEquals|GreaterThan|GreaterThanEquals)|Date(?:Equals|NotEquals|LessThan|LessThanEquals|GreaterThan|GreaterThanEquals)|Bool|Null|IpAddress|NotIpAddress|BinaryEquals)(IfExists)?$/.exec(name.value);
-          if (!match || (match[2] === 'Null' && match[3])) report(name, 'INVALID_CONDITION_OPERATOR', `Invalid IAM condition operator: ${name.value}.`);
+          if (!match || (match[2] === 'Null' && (match[1] || match[3]))) report(name, 'INVALID_CONDITION_OPERATOR', `Invalid IAM condition operator: ${name.value}.`);
           if (entries.type !== 'object') { report(entries, 'INVALID_CONDITION_TYPE', 'Condition operator requires an object of condition keys.'); continue; }
           for (const property of entries.children ?? []) {
             const key = property.children![0], value = property.children![1];
@@ -180,6 +175,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
             casing.set(key.value.toLowerCase(), key.value);
             const values = value.type === 'array' ? value.children ?? [] : [value];
             if (values.some(node => !['string', 'number', 'boolean'].includes(node.type))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers or booleans, or arrays of these values.');
+            if (match && !/^(String|Arn)/.test(match[2]) && values.some(node => node.type === 'string' && /\$\{(?!template:)/.test(node.value))) report(value, 'INVALID_CONDITION_VARIABLE', `${match[2]} does not support policy variables.`);
             if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.length !== 1) report(value, 'INVALID_CONDITION_MULTIPLE_BOOLEAN', `${match![2]} requires a single Boolean value.`);
             if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !String(node.value).includes('${template:') && !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');
           }

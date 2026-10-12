@@ -2,8 +2,6 @@
 
 <img src="images/iam-policy-debugger-extension-icon.png" alt="IAM Policy Debugger icon" width="96">
 
-**Unpublished development preview.** This extension is not available in the VS Code Marketplace. Build a local VSIX from this checkout to try it.
-
 Validate IAM policies while you edit, explain an identity-policy access decision, and keep the expected outcome as a regression test. Everything runs locally in VS Code. No AWS credentials are required.
 
 <!-- TIP-LIST:START -->
@@ -28,7 +26,7 @@ Validate IAM policies while you edit, explain an identity-policy access decision
 
 ## See it in action
 
-These are real captures of the packaged preview in an isolated VS Code profile, using disposable example policies and a fictional AWS account.
+These are real captures of the packaged extension in an isolated VS Code profile, using disposable example policies and a fictional AWS account.
 
 ### Validate as you edit
 
@@ -60,9 +58,17 @@ Scope broad permissions to clear the warnings, simulate a read over TLS, then re
 
 ![Demo of repairing policy findings and testing TLS access](docs/images/policy-demo.gif)
 
-## Build and try the preview
+## Install
 
-Use Node.js 24 and VS Code 1.85 or newer. From this checkout:
+Requires VS Code 1.85 or newer. For published releases, install **AWS IAM Policy Debugger** by `dannysteenman` from the Extensions view, or run:
+
+```sh
+code --install-extension dannysteenman.iam-policy-debugger
+```
+
+### Build from source
+
+To install a local build instead, use Node.js 24. From this checkout:
 
 ```sh
 fnm use
@@ -71,6 +77,8 @@ npm run package
 ```
 
 Run **Extensions: Install from VSIX** in VS Code and select `.vscode-test/iam-policy-debugger.vsix`. You can also press F5 after `npm run compile` to open an Extension Development Host with the examples workspace.
+
+## Debug an access decision
 
 1. Open a trusted local workspace containing identity-policy JSON, CloudFormation JSON/YAML or Terraform files. The [examples](examples/) include standalone and template policies with saved scenarios.
 2. Open the file and run **IAM: Debug Access for Current Policy** from the Command Palette. It is also available in the editor toolbar and Explorer context menu. If the file contains multiple policies, choose one from the policy picker.
@@ -157,7 +165,7 @@ Run all or selected scenarios from the Testing panel, or use **IAM: Run Scenario
 
 ## Run scenarios in CI
 
-The CLI uses the same evaluator and scenario format as VS Code. Build this unpublished preview from a checkout, then run:
+The CLI uses the same evaluator and scenario format as VS Code. Build it from a checkout with Node.js 24, then run:
 
 ```sh
 npm ci
@@ -170,7 +178,7 @@ It reads saved files; VS Code's Testing panel can also use unsaved buffers. Dire
 
 Exit codes are **0** when every scenario passes, **1** for an expectation mismatch, and **2** for invalid input, unsupported policies, unresolved references or no scenarios. Empty suites fail rather than give a false green check. JSON output includes the scope, counts and each scenario's actual decision or error.
 
-For GitHub Actions, after checkout and Node setup, use a step like this in your policy repository (with this preview checkout at `tools/iam-policy-debugger`):
+For GitHub Actions, after checkout and Node setup, use a step like this in your policy repository (with the extension checkout at `tools/iam-policy-debugger`):
 
 ```yaml
 - name: Test IAM policies

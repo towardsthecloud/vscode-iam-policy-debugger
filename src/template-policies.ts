@@ -66,11 +66,13 @@ function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean,
       return templateValue(argument, values, tolerant, unresolved);
     }
     if (key === 'Fn::GetAtt') {
+      if (Array.isArray(argument) && (argument.length !== 2 || argument.some(part => typeof part !== 'string' || !part))) throw new Error('GetAtt requires a resource name and attribute name.');
       const name = Array.isArray(argument) ? argument.join('.') : argument;
-      if (typeof name !== 'string') throw new Error('GetAtt requires an attribute name.');
+      if (typeof name !== 'string' || !/^[^.]+\..+$/.test(name)) throw new Error('GetAtt requires a resource name and attribute name.');
       return templateValue(name, values, tolerant, unresolved);
     }
     if (key === 'Fn::Sub') {
+      if (Array.isArray(argument) && argument.length !== 2) throw new Error('Sub requires a string and optional value mapping.');
       const template = Array.isArray(argument) ? argument[0] : argument;
       const local = Array.isArray(argument) ? resolveCloud(argument[1], values, tolerant, unresolved) : {};
       if (typeof template !== 'string' || !local || typeof local !== 'object' || Array.isArray(local)) throw new Error('Sub requires a string and optional value mapping.');
@@ -85,7 +87,6 @@ function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean,
       return parts.join(argument[0]);
     }
     if (key.startsWith('Fn::') || key === 'Condition') {
-      if (tolerant) return templateValue(key, values, true, unresolved);
       throw new Error(`Unsupported CloudFormation intrinsic: ${key}. Supply a resolved policy document.`);
     }
   }

@@ -231,6 +231,17 @@ exports.run = async function () {
       await fs.rmdir(outsideDirectory);
     }
     checks.push('embedded policy selection and template values persist and run through the Testing panel');
+    const emptyPolicy = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'empty.json'));
+    const emptySuite = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'empty.iam-tests.json'));
+    await vscode.workspace.fs.writeFile(emptyPolicy, Buffer.from(JSON.stringify({Statement: {Effect: 'Allow', Action: 's3:GetObject', Resource: '*'}})));
+    await vscode.workspace.fs.writeFile(emptySuite, Buffer.from('{"version":1,"tests":[]}'));
+    const emptyOutcomes = await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', emptySuite);
+    assert.equal(emptyOutcomes.length, 1, 'An empty suite must produce an error, not a successful empty run');
+    assert.equal(emptyOutcomes[0].status, 'errored');
+    assert.match(emptyOutcomes[0].error, /empty/i);
+    await vscode.commands.executeCommand('iamPolicyDebugger.saveScenario', emptyPolicy, {name: 'First scenario', expected: 'Allowed', request});
+    assert.equal((await vscode.commands.executeCommand('iamPolicyDebugger.runScenarios', emptySuite))[0].status, 'passed');
+    checks.push('empty suites error in the Testing panel and can still receive their first saved scenario');
     const validationUri = vscode.Uri.file(path.join(process.env.IAM_TEST_WORKSPACE, 'validation.json'));
     await vscode.workspace.fs.writeFile(validationUri, Buffer.from(JSON.stringify({Version: '2012-10-17', Statement: {Effect: 'Permit', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'}}, null, 2)));
     const validationDocument = await vscode.workspace.openTextDocument(validationUri);
@@ -311,6 +322,27 @@ exports.run = async function () {
       for (const item of findings) assert.equal(item.severity, vscode.DiagnosticSeverity.Warning);
     }
     checks.push('broad Allow, public principals and complement warnings match the website rules without warning on equivalent Deny statements');
+    const reviewFailures = [];
+    const diagnosticStatement = {Effect: 'Allow', Action: 's3:GetObject', Resource: 'arn:aws:s3:::example-uploads/*'};
+    const diagnosticCases = [
+      ...['NumericEquals', 'DateEquals', 'IpAddress', 'BinaryEquals'].map(operator => [operator, {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {[operator]: {'aws:Example': '${aws:username}'}}}}, 'INVALID_CONDITION_VARIABLE']),
+      ...['ForAnyValue:Null', 'ForAllValues:Null'].map(operator => [operator, {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {[operator]: {'aws:TokenIssueTime': 'true'}}}}, 'INVALID_CONDITION_OPERATOR']),
+      ['wildcard service', {Version: '2012-10-17', Statement: {...diagnosticStatement, Action: 'madeup:*'}}, 'INVALID_ACTION'],
+      ['SetContext trust', {Version: '2012-10-17', Statement: {Effect: 'Allow', Principal: {Service: 'sagemaker.amazonaws.com'}, Action: ['sts:AssumeRole', 'sts:SetContext']}}],
+      ['unsupported intrinsic', {Resources: {Policy: {Properties: {PolicyDocument: {Version: '2012-10-17', Statement: {...diagnosticStatement, Resource: {'Fn::If': ['Enabled', '*', '*']}}}}}}}, 'TEMPLATE_POLICY_ERROR'],
+      ['unresolved numeric reference', {Resources: {Policy: {Properties: {PolicyDocument: {Version: '2012-10-17', Statement: {...diagnosticStatement, Condition: {NumericEquals: {'s3:max-keys': {Ref: 'Limit'}}}}}}}}}],
+    ];
+    for (const [name, value, code] of diagnosticCases) {
+      await editValidation({Version: '2012-10-17', Statement: {...diagnosticStatement, Effect: 'Permit'}});
+      await waitDiagnostics(items => items.some(item => item.code === 'INVALID_EFFECT'));
+      await editValidation(value);
+      try {
+        await waitDiagnostics(items => code ? items.some(item => item.code === code && item.severity === vscode.DiagnosticSeverity.Error)
+          : items.every(item => item.severity !== vscode.DiagnosticSeverity.Error));
+      } catch (error) { reviewFailures.push(`${name}: ${error.message}`); }
+    }
+    assert.deepEqual(reviewFailures, []);
+    checks.push('condition-variable and Null errors, wildcard service validation, SetContext trusts and unsupported intrinsics');
     await editValidation({name: 'Ordinary project settings', StatementNested: {Effect: 'Permit'}});
     await waitDiagnostics(items => items.length === 0);
     await editValidation('{"Statement": }');

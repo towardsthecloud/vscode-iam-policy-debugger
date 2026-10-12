@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IAM policy regression scenarios",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "tests"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "policy",
+          "expected",
+          "request"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "policy": {
+            "type": "string",
+            "description": "Path relative to this scenario file, inside the workspace.",
+            "minLength": 1
+          },
+          "expected": {
+            "enum": [
+              "Allowed",
+              "ExplicitlyDenied",
+              "ImplicitlyDenied"
+            ]
+          },
+          "request": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "principal",
+              "action",
+              "resource",
+              "resourceAccountId"
+            ],
+            "properties": {
+              "principal": {
+                "type": "string",
+                "description": "IAM user or role ARN; context values must be supplied separately."
+              },
+              "action": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9-]+:[a-zA-Z0-9]+$"
+              },
+              "resource": {
+                "type": "string"
+              },
+              "resourceAccountId": {
+                "type": "string",
+                "pattern": "^(?:[0-9]{12}|aws)$"
+              },
+              "context": {
+                "type": "object",
+                "additionalProperties": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "policyId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "JSON pointer in CloudFormation or Terraform policy address; required when the file contains multiple policies."
+          },
+          "templateValues": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Explicit CloudFormation or Terraform reference values."
+          }
+        }
+      }
+    }
+  }
+}

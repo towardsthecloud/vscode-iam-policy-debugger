@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "Read CloudFormation uploads",
+      "policy": "template.yaml",
+      "policyId": "/Resources/UploadsPolicy/Properties/PolicyDocument",
+      "templateValues": {
+        "Bucket": "example-uploads"
+      },
+      "expected": "Allowed",
+      "request": {
+        "principal": "arn:aws:iam::123456789012:role/Application",
+        "action": "s3:GetObject",
+        "resource": "arn:aws:s3:::example-uploads/photo.jpg",
+        "resourceAccountId": "123456789012",
+        "context": {}
+      }
+    },
+    {
+      "name": "Terraform blocks deletes outside the trusted network",
+      "policy": "policies.tf",
+      "policyId": "data.aws_iam_policy_document.delete",
+      "expected": "ExplicitlyDenied",
+      "request": {
+        "principal": "arn:aws:iam::123456789012:role/Application",
+        "action": "s3:DeleteObject",
+        "resource": "arn:aws:s3:::example-uploads/photo.jpg",
+        "resourceAccountId": "123456789012",
+        "context": {
+          "aws:SourceIp": "192.0.2.1"
+        }
+      }
+    }
+  ]
+}

@@ -1,3 +1,23 @@
-Scaffold adapted from towardsthecloud/vscode-iam-actions-snippets, copyright Danny Steenman, licensed under Apache-2.0. Original license retained in licenses/scaffold-Apache-2.0.txt.
+AWS IAM Policy Debugger
+Copyright 2026 Towards The Cloud
 
-IAM simulation uses @actsecurity/iam-simulate by ACT Security Labs, licensed under AGPL-3.0. This extension is distributed under AGPL-3.0-only.
+Scaffold adapted from AWS IAM Actions Snippets, Apache-2.0:
+https://github.com/towardsthecloud/vscode-iam-actions-snippets
+
+Includes the MIT-licensed IAM catalog from ACT Security Labs:
+https://github.com/act-security-labs/iam-data
+See licenses/iam-data.txt for its copyright and license.
+
+The policy evaluator in this repository is independently implemented.
+
+Includes Microsoft jsonc-parser, MIT-licensed.
+See licenses/jsonc-parser.txt for its copyright and license.
+
+Includes ipaddr.js (MIT) and yaml (ISC).
+See licenses/ipaddr.js.txt and licenses/yaml.txt.
+
+Includes the unmodified @cdktf/hcl2json parser, MPL-2.0.
+See licenses/hcl2json.txt and out/node_modules/@cdktf/hcl2json/LICENSE.
+Source for version 0.21.0, including the Go/WASM parser:
+https://github.com/hashicorp/terraform-cdk/tree/v0.21.0/packages/@cdktf/hcl2json
+Its separately packaged runtime dependencies retain their original licenses.

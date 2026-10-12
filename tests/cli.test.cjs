@@ -70,13 +70,17 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     ['Version must be a string', {Version: ['2012-10-17'], Statement: statement}, /Version/],
     ['Id is not an identity-policy element', {Id: 'Policy', Statement: statement}, /Id/],
     ['Sid rejects punctuation', {Statement: {...statement, Sid: 'Read-Uploads'}}, /Sid/],
+    ['Sid must be unique even across unmatched statements', {Statement: [{...statement, Sid: 'Read'}, {...statement, Sid: 'Read', Action: 's3:PutObject'}]}, /Duplicate.*Sid/],
     ['NotAction rejects unknown wildcard services', {Statement: {Effect: 'Allow', NotAction: 'madeup:*', Resource: '*'}}, /does not exist/],
     ['Action rejects unknown wildcard services even when unmatched', {Statement: [statement, {...statement, Action: 'madeup:*'}]}, /does not exist/],
+    ['Sid remains optional', {Statement: [statement, {...statement, Sid: 'Read'}, statement]}],
+    ['Sid comparisons are case-sensitive', {Statement: [{...statement, Sid: 'Read'}, {...statement, Sid: 'read'}]}],
   ]) {
     fs.writeFileSync(invalidPolicy, JSON.stringify(value));
     const result = run([file]);
-    assert.equal(result.status, 2, `${name}: ${result.stdout}`);
-    assert.match(JSON.parse(result.stdout).results[0].error, error);
+    assert.equal(result.status, error ? 2 : 0, `${name}: ${result.stdout}`);
+    if (error) assert.match(JSON.parse(result.stdout).results[0].error, error);
+    else assert.equal(JSON.parse(result.stdout).results[0].actual, 'Allowed');
   }
   for (const [name, resource, request, error, expected = 'Allowed'] of [
     ['request partitions must agree', '*', {...scenario.request, resource: 'arn:aws-cn:s3:::example-uploads/photo.jpg'}, /partition/],
@@ -121,12 +125,38 @@ test('packaged CLI runs saved template scenarios and reports failures safely for
     if (result.status !== (literal ? 2 : 0) || (literal ? !/precision/i.test(outcome.error ?? '') : outcome.actual !== expected)) numericFailures.push({operator, value, actual, literal, outcome});
   }
   assert.deepEqual(numericFailures, []);
+  const templateNumberFailures = [];
+  for (const [filename, policyId, template] of [
+    ['numeric.yaml', '/Resources/Policy/Properties/PolicyDocument', policy => `Resources: {Policy: {Properties: {PolicyDocument: ${policy}}}}`],
+    ['numeric-1.1.yaml', '/Resources/Policy/Properties/PolicyDocument', policy => `%YAML 1.1\n---\nResources: {Policy: {Properties: {PolicyDocument: ${policy}}}}`],
+    ['numeric.tf', 'resource.aws_iam_policy.numeric.policy', policy => `resource "aws_iam_policy" "numeric" {\npolicy = jsonencode(${policy})\n}`],
+    ['numeric.tf', 'data.aws_iam_policy_document.numeric', (policy, literal) => `data "aws_iam_policy_document" "numeric" {\nstatement {\nactions = ["s3:GetObject"]\nresources = ["*"]\ncondition {\ntest = "NumericEquals"\nvariable = "example:number"\nvalues = [${literal}]\n}\n}\n}`],
+  ]) for (const [literal, actual, expected] of [
+    ['9007199254740993', '9007199254740992'],
+    ['0.10000000000000000001', '0.1'],
+    ['1e-400', '0'],
+    ['42', '42', 'Allowed'],
+    ['0.1', '0.1', 'Allowed'],
+    ['"9007199254740993"', '9007199254740992', 'ImplicitlyDenied'],
+    ...(filename === 'numeric.yaml' ? [['0x20000000000001', '9007199254740992'], ['0x2a', '42', 'Allowed'], ['0o52', '42', 'Allowed']] : []),
+    ...(filename === 'numeric-1.1.yaml' ? [['1:00.10000000000000000001', '60.1'], ['1:00.1', '60.1', 'Allowed'], ['052', '42', 'Allowed']] : []),
+  ]) {
+    const policy = JSON.stringify({Statement: {...statement, Condition: {NumericEquals: {'example:number': 'VALUE'}}}}).replace('"VALUE"', literal);
+    fs.writeFileSync(path.join(root, filename), template(policy, literal));
+    save({...scenario, policy: filename, policyId, templateValues: {}, expected: expected ?? 'Allowed', request: {...scenario.request, context: {'example:number': actual}}});
+    const result = run([file]), outcome = JSON.parse(result.stdout).results[0];
+    if (result.status !== (expected ? 0 : 2) || (expected ? outcome.actual !== expected : !/precision/i.test(outcome.error ?? ''))) templateNumberFailures.push({policyId, literal, outcome});
+  }
+  assert.deepEqual(templateNumberFailures, []);
   const resource = 'arn:aws:s3:::example-uploads/*';
   for (const [name, intrinsic, error, rootPolicy = false] of [
     ['Sub rejects extra arguments', {'Fn::Sub': [resource, {}, 'extra']}, /Sub requires/],
     ['GetAtt rejects extra arguments', {'Fn::GetAtt': ['Bucket', 'Arn', 'Extra']}, /GetAtt requires/],
     ['GetAtt rejects non-string arguments', {'Fn::GetAtt': ['Bucket', 42]}, /GetAtt requires/],
     ['Sub accepts its two-argument form', {'Fn::Sub': [resource, {}]}],
+    ...['Ref', 'Condition', 'Fn::Join'].map(key => [`Sub mapping key ${key} is not an intrinsic`, {'Fn::Sub': ['${' + key + '}', {[key]: resource}]}]),
+    ['Sub resolves an intrinsic inside a mapping value', {'Fn::Sub': ['${Ref}', {Ref: {'Ref': 'Bucket.Arn'}}]}],
+    ['Sub rejects a null mapping', {'Fn::Sub': [resource, null]}, /Sub requires/],
     ['GetAtt accepts its two-argument form', {'Fn::GetAtt': ['Bucket', 'Arn']}],
     ['GetAtt accepts dotted attribute names', {'Fn::GetAtt': 'Bucket.Arn.Extra'}],
     ['root JSON fragments use supplied bindings', {Ref: 'Bucket.Arn'}, undefined, true],

@@ -38,7 +38,7 @@ export function parseJson(text: string): { value: unknown; tree: Node } {
     throw new Error(`Invalid JSON: ${errors.map(e => `${printParseErrorCode(e.error)} at offset ${e.offset}`).join(', ') || 'empty document'}`);
   }
   const visit = (node: Node): void => {
-    if (node.type === 'number' && (!Number.isFinite(node.value) || compareDecimals(text.slice(node.offset, node.offset + node.length), String(node.value)) !== 0)) throw new Error('JSON number loses precision. Supply a quoted decimal string instead.');
+    if (node.type === 'number') parseNumber(text.slice(node.offset, node.offset + node.length));
     if (node.type === 'object') {
       const keys = new Set<string>();
       for (const property of node.children ?? []) {
@@ -159,6 +159,11 @@ function resolveValue(value: string, context: AccessRequest['context'], variable
   return {value: unresolved ? undefined : result, pattern};
 }
 
+export function parseNumber(value: string): number {
+  const number = Number(value);
+  if (!Number.isFinite(number) || compareDecimals(value, String(number)) !== 0) throw new Error('Number loses precision. Supply a quoted decimal string instead.');
+  return number;
+}
 function numericValue(value: string): number {
   if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim()) || !Number.isFinite(Number(value))) {
     throw new Error(`Numeric conditions require finite decimal values: ${value}`);
@@ -296,11 +301,16 @@ export async function simulatePolicy(text: string, input: unknown): Promise<Acce
     if (!matchesType) throw new Error('Resource type does not match the requested IAM action.');
   }
   const statementNode = findNodeAtLocation(tree, ['Statement']);
+  const sids = new Set<string>();
   const statements = await Promise.all(raw.map(async (value: unknown, index: number): Promise<StatementResult> => {
     const statement = object(value, `Statement ${index + 1}`);
     for (const key of Object.keys(statement)) if (!['Sid','Effect','Action','NotAction','Resource','NotResource','Condition'].includes(key)) throw new Error(`Unsupported statement field: ${key}. Only identity policies are supported.`);
     if (typeof statement.Effect !== 'string' || !['Allow','Deny'].includes(statement.Effect)) throw new Error('Statement Effect must be Allow or Deny.');
-    if (statement.Sid !== undefined && (typeof statement.Sid !== 'string' || /[^a-z0-9]/i.test(statement.Sid))) throw new Error('Statement Sid must be a string containing only letters and numbers.');
+    if (statement.Sid !== undefined) {
+      if (typeof statement.Sid !== 'string' || /[^a-z0-9]/i.test(statement.Sid)) throw new Error('Statement Sid must be a string containing only letters and numbers.');
+      if (sids.has(statement.Sid)) throw new Error(`Duplicate statement Sid: ${statement.Sid}`);
+      sids.add(statement.Sid);
+    }
     if ((statement.Resource === undefined) === (statement.NotResource === undefined)) throw new Error('Statement requires exactly one of Resource or NotResource.');
     if ((statement.Action === undefined) === (statement.NotAction === undefined)) throw new Error('Statement requires exactly one of Action or NotAction.');
     const actions = strings(statement.Action ?? statement.NotAction, 'Action');

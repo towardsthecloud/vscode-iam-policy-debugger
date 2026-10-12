@@ -1,5 +1,5 @@
 import { parse, getExpressionAst, type TFExpressionSyntaxTree } from '@cdktf/hcl2json';
-import { parseJson } from './simulation';
+import { parseJson, parseNumber } from './simulation';
 import { templateValue } from './template-policies';
 import type { PolicySource, TemplateValues, SourceRange } from './policies';
 type Expression = TFExpressionSyntaxTree.ExpressionType;
@@ -124,6 +124,11 @@ async function policyDocumentRanges(text: string, tokens: HclToken[], block: Rec
   };
   const ast = await getExpressionAst(filename, expression);
   if (!ast || ast.type !== 'object') throw new Error('Could not locate Terraform policy-document fields.');
+  const checkNumbers = (node: Expression): void => {
+    if (node.type === 'literalValue' && node.meta.type === 'number') parseNumber(node.meta.value);
+    node.children.forEach(checkNumbers);
+  };
+  checkNumbers(ast);
   let statementIndex = 0;
   for (const [key, value] of entries(ast)) {
     const name = keyOf(key);
@@ -224,7 +229,8 @@ function evaluate(ast: Expression | null, source: string, values: TemplateValues
   const child = (node: Expression, next = path): unknown => evaluate(node, source, values, tolerant, unresolved, next, locate);
   if (ast.type === 'literalValue') {
     if (ast.meta.type === 'string') return ast.meta.value.replace(/\$\$\{/g, '${').replace(/%%\{/g, '%{');
-    if (ast.meta.type === 'number' || ast.meta.type === 'bool' || ast.meta.value === 'null') return JSON.parse(ast.meta.value);
+    if (ast.meta.type === 'number') return parseNumber(ast.meta.value);
+    if (ast.meta.type === 'bool' || ast.meta.value === 'null') return JSON.parse(ast.meta.value);
   }
   if (ast.type === 'template') return ast.children.map(node => String(child(node))).join('');
   if (ast.type === 'templateWrap') return child(ast.children[0]);

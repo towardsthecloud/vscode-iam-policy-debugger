@@ -1,9 +1,20 @@
-import { parseDocument, isNode, type ParsedNode } from 'yaml';
+import { parseDocument, isNode, type ParsedNode, type ScalarTag } from 'yaml';
 import { findNodeAtLocation, type Node } from 'jsonc-parser';
-import { parseJson } from './simulation';
+import { parseJson, parseNumber } from './simulation';
 import type { PolicySource, TemplateValues, SourceRange } from './policies';
 
 const pointer = (path: (string | number)[]): string => '/' + path.map(value => String(value).replace(/~/g, '~0').replace(/\//g, '~1')).join('/');
+function preciseYamlNumber(tag: ScalarTag): ScalarTag {
+  return {...tag, resolve(value, onError, options) {
+    let decimal = tag.tag.endsWith(':int') ? String(tag.resolve(value, onError, {...options, intAsBigInt: true})) : value.replace(/_/g, '');
+    if (decimal.includes(':')) {
+      const sign = decimal.startsWith('-') ? '-' : '';
+      const [whole, fraction = ''] = decimal.replace(/^[+-]/, '').split('.');
+      decimal = sign + whole.split(':').reduce((total, part) => total * 60n + BigInt(part), 0n) + '.' + fraction;
+    }
+    return parseNumber(decimal);
+  }};
+}
 export function cloudPolicies(text: string, filename: string): PolicySource[] {
   let value: unknown, rangeAt: (path: (string | number)[]) => SourceRange;
   if (/\.ya?ml$/i.test(filename)) {
@@ -13,7 +24,7 @@ export function cloudPolicies(text: string, filename: string): PolicySource[] {
       return [{tag: `!${name}`, resolve: (value: string) => ({[key]: value})},
         {tag: `!${name}`, collection: 'seq' as const, resolve: (value: {toJSON(): unknown}) => ({[key]: value.toJSON()})}];
     });
-    const document = parseDocument(text, {customTags: tags, uniqueKeys: true});
+    const document = parseDocument(text, {customTags: defaults => [...defaults.map(tag => typeof tag !== 'string' && !tag.collection && /:(int|float)$/.test(tag.tag) ? preciseYamlNumber(tag) : tag), ...tags], uniqueKeys: true});
     if (document.errors.length) throw new Error(`Invalid YAML: ${document.errors.map(error => error.message).join('; ')}`);
     value = document.toJS({maxAliasCount: 100});
     rangeAt = path => {
@@ -77,9 +88,9 @@ function resolveCloud(value: unknown, values: TemplateValues, tolerant: boolean,
     if (key === 'Fn::Sub') {
       if (Array.isArray(argument) && argument.length !== 2) throw new Error('Sub requires a string and optional value mapping.');
       const template = Array.isArray(argument) ? argument[0] : argument;
-      const local = Array.isArray(argument) ? resolveCloud(argument[1], values, tolerant, unresolved) : {};
+      const local = Array.isArray(argument) ? argument[1] : {};
       if (typeof template !== 'string' || !local || typeof local !== 'object' || Array.isArray(local)) throw new Error('Sub requires a string and optional value mapping.');
-      const bindings = {...values, ...local} as TemplateValues;
+      const bindings = {...values, ...Object.fromEntries(Object.entries(local).map(([key, value]) => [key, resolveCloud(value, values, tolerant, unresolved)]))} as TemplateValues;
       if (Object.values(bindings).some(value => typeof value !== 'string')) throw new Error('Sub mapping values must resolve to strings.');
       return template.replace(/\$\{([^}]+)\}/g, (_, name: string) => name.startsWith('!') ? '${' + name.slice(1) + '}' : templateValue(name, bindings, tolerant, unresolved));
     }

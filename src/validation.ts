@@ -119,11 +119,16 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
     return findings;
   }
   const nodes = statements.type === 'array' ? statements.children ?? [] : [statements];
+  const sids = new Set<string>();
   for (const statement of nodes) {
     if (statement.type !== 'object') { report(statement, 'INVALID_STATEMENT_TYPE', 'Statement must be an object or array of objects.'); continue; }
     knownFields(statement, ['Sid', 'Effect', 'Action', 'NotAction', 'Resource', 'NotResource', 'Principal', 'NotPrincipal', 'Condition']);
     const sid = field(statement, 'Sid');
     if (sid && sid.type !== 'string') report(sid, 'INVALID_SID_TYPE', 'Sid must be a string.');
+    if (sid?.type === 'string' && !sid.value.includes('${template:')) {
+      if (sids.has(sid.value)) report(sid, 'DUPLICATE_SID', `Duplicate statement Sid: ${sid.value}. Use a unique Sid within the policy.`);
+      sids.add(sid.value);
+    }
     const effect = field(statement, 'Effect');
     if (!effect) report(statement, 'MISSING_EFFECT', 'Statement requires Effect: Allow or Deny.');
     else if (effect.type !== 'string' || (!effect.value.includes('${template:') && !['Allow', 'Deny'].includes(effect.value))) report(effect, 'INVALID_EFFECT', 'Effect must be Allow or Deny.');
@@ -175,7 +180,7 @@ async function policyFindings(document: vscode.TextDocument, tree: Node): Promis
             if (previous !== undefined && previous !== key.value) report(key, 'DUPLICATE_KEYS_WITH_DIFFERENT_CASE', `Condition key ${key.value} appears with different capitalization. Use the same spelling throughout Condition.`);
             casing.set(key.value.toLowerCase(), key.value);
             const values = value.type === 'array' ? value.children ?? [] : [value];
-            if (values.some(node => !['string', 'number', 'boolean'].includes(node.type))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers or booleans, or arrays of these values.');
+            if (!values.length || values.some(node => !['string', 'number', 'boolean'].includes(node.type))) report(value, 'INVALID_CONDITION_VALUE', 'Condition values must be strings, numbers or booleans, or nonempty arrays of these values.');
             if (match && !/^(String|Arn)/.test(match[2]) && values.some(node => node.type === 'string' && /\$\{(?!template:)/.test(node.value))) report(value, 'INVALID_CONDITION_VARIABLE', `${match[2]} does not support policy variables.`);
             if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.length !== 1) report(value, 'INVALID_CONDITION_MULTIPLE_BOOLEAN', `${match![2]} requires a single Boolean value.`);
             if (['Bool', 'Null'].includes(match?.[2] ?? '') && values.some(node => !String(node.value).includes('${template:') && !['true', 'false'].includes(String(node.value)))) report(value, 'INVALID_CONDITION_VALUE', 'Bool and Null require true or false.');

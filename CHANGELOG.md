@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Publish releases with GitHub Trusted Publishing.
+
 ## 0.1.1
 
 - Remove the duplicate README icon and place the CloudBurn tip after the introductory feature list.

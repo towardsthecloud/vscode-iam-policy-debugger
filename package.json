@@ -3,7 +3,7 @@
   "displayName": "AWS IAM Policy Debugger",
   "description": "Validate AWS IAM policies, debug access decisions and run regression scenarios in VS Code.",
   "author": "Danny Steenman",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "dannysteenman",
   "homepage": "https://towardsthecloud.com",
   "license": "Apache-2.0",
